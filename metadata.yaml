@@ -1,5 +1,10 @@
-name: helloworld # 这是你的插件的唯一识别名。
-desc: 这是 AstrBot 的默认插件，支持关键词回复。 # 插件简短描述
-version: v1.3 # 插件版本号。格式：v1.1.1 或者 v1.1
-author: Soulter # 作者
-repo: https://github.com/Soulter/helloworld # 插件的仓库地址
+name: soupai # 这是你的插件的唯一识别名。
+desc: AI 海龟汤推理游戏插件，支持自动生成谜题、智能问答、相似度检测、验证系统、存储库管理等功能。 # 插件简短描述
+version: v1.0.0 # 插件版本号。格式：v1.1.1 或者 v1.1
+author: KONpiGG # 作者
+repo: https://github.com/KONpiGG/astrbot_plugin_soupai # 插件的仓库地址
+
+# 事件监听器配置
+event_listener:
+  default_priority: 100  # 确保高于默认 reply 插件
+  stop_propagation: false  # 不阻止其他插件继续处理

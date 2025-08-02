@@ -1,0 +1,38 @@
+{
+  "generate_llm_provider": {
+    "description": "生成谜题的 LLM 服务商",
+    "type": "string",
+    "hint": "选择用于生成海龟汤谜题的 LLM 服务商。留空则使用系统默认的 LLM 服务商。",
+    "default": ""
+  },
+  "judge_llm_provider": {
+    "description": "判断问答的 LLM 服务商",
+    "type": "string",
+    "hint": "选择用于判断用户问答的 LLM 服务商。留空则使用系统默认的 LLM 服务商。",
+    "default": ""
+  },
+  "game_timeout": {
+    "description": "游戏超时时间（秒）",
+    "type": "int",
+    "hint": "游戏超时时间，超过此时间自动结束游戏并揭晓答案",
+    "default": 300
+  },
+  "storage_max_size": {
+    "description": "存储库最大容量",
+    "type": "int",
+    "hint": "存储库最多保存多少个备用故事",
+    "default": 50
+  },
+  "auto_generate_start": {
+    "description": "自动生成开始时间",
+    "type": "int",
+    "hint": "每天自动生成备用故事的开始时间（小时，24小时制）",
+    "default": 3
+  },
+  "auto_generate_end": {
+    "description": "自动生成结束时间",
+    "type": "int",
+    "hint": "每天自动生成备用故事的结束时间（小时，24小时制）",
+    "default": 6
+  }
+} 

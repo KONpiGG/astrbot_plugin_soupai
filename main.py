@@ -319,10 +319,17 @@ class SoupaiPlugin(Star):
         提供一次性惰性初始化。
         """
 
-        if self.local_story_storage is None and hasattr(self, "data_path"):
-            storage_file = self.data_path / "soupai_stories.json"
+        if self.local_story_storage is None:
+            # 获取 data_path，如果还没有设置则使用默认路径
+            data_path = getattr(self, "data_path", None)
+            if data_path is None:
+                # 如果 data_path 还没有设置，使用插件目录作为默认路径
+                plugin_dir = Path(__file__).resolve().parent
+                data_path = plugin_dir / "data"
+            
+            storage_file = data_path / "soupai_stories.json"
             self.local_story_storage = StoryStorage(
-                storage_file, self.storage_max_size, self.data_path
+                storage_file, self.storage_max_size, data_path
             )
 
         if self.online_story_storage is None:
@@ -363,6 +370,15 @@ class SoupaiPlugin(Star):
                 # 检查是否在自动生成时间范围内
                 if self.auto_generate_start <= current_hour < self.auto_generate_end:
                     if not self.auto_generating:
+                        # 检查存储库是否已满，如果已满则不启动自动生成
+                        self._ensure_story_storages()
+                        storage_info = self.local_story_storage.get_storage_info()
+                        if storage_info["available"] <= 0:
+                            logger.info(f"本地存储库已满，跳过自动生成，时间: {current_hour}:00")
+                            # 等待1小时后再次检查
+                            await asyncio.sleep(3600)  # 1小时
+                            continue
+                        
                         logger.info(f"开始自动生成故事，时间: {current_hour}:00")
                         self.auto_generating = True
                         asyncio.create_task(self._auto_generate_loop())
@@ -389,6 +405,7 @@ class SoupaiPlugin(Star):
                 storage_info = self.local_story_storage.get_storage_info()
                 if storage_info["available"] <= 0:
                     logger.info("本地存储库已满，停止自动生成")
+                    self.auto_generating = False
                     break
                 
                 # 生成一个故事
@@ -614,7 +631,7 @@ class SoupaiPlugin(Star):
         try:
             puzzle, answer = await self.generate_story_with_llm()
             if puzzle and answer and not puzzle.startswith("（"):
-                self.story_storage.add_story(puzzle, answer)
+                self.local_story_storage.add_story(puzzle, answer)
                 logger.info("为存储库生成故事成功")
                 return True
             else:
@@ -1235,7 +1252,8 @@ class SoupaiPlugin(Star):
             return
         
         # 检查存储库是否已满
-        storage_info = self.story_storage.get_storage_info()
+        self._ensure_story_storages()
+        storage_info = self.local_story_storage.get_storage_info()
         if storage_info["available"] <= 0:
             print(f"[测试输出] /备用开始 指令：存储库已满")
             yield event.plain_result("⚠️ 存储库已满，无法生成更多故事")
@@ -1301,6 +1319,11 @@ class SoupaiPlugin(Star):
         
         print(f"[测试输出] /备用状态 指令：生成状态={status}, 本地存储库={storage_info['total']}/{storage_info['max_size']}")
         
+        # 检查存储库是否已满
+        storage_full_warning = ""
+        if storage_info["available"] <= 0:
+            storage_full_warning = "\n⚠️ 本地存储库已满，自动生成已停止"
+        
         message = f"📚 备用故事状态：\n" \
                  f"• 生成状态：{status}\n" \
                  f"• 本地存储库：{storage_info['total']}/{storage_info['max_size']}\n" \
@@ -1308,7 +1331,7 @@ class SoupaiPlugin(Star):
                  f"• 剩余题目：{storage_info['remaining']}\n" \
                  f"• 可用空间：{storage_info['available']}\n" \
                  f"• 网络题库：{online_info['total']} 个 (已用: {online_info['used']}, 剩余: {online_info['available']})\n" \
-                 f"• 自动生成时间：{self.auto_generate_start}:00-{self.auto_generate_end}:00"
+                 f"• 自动生成时间：{self.auto_generate_start}:00-{self.auto_generate_end}:00{storage_full_warning}"
         
         yield event.plain_result(message)
 
@@ -1343,6 +1366,7 @@ class SoupaiPlugin(Star):
         """查看题库详细使用记录（仅管理员）"""
         print(f"[测试输出] 收到 /题库详情 指令")
 
+        # 确保题库已初始化
         self._ensure_story_storages()
 
         # 获取网络题库详细信息
@@ -1355,18 +1379,22 @@ class SoupaiPlugin(Star):
         
         print(f"[测试输出] /题库详情 指令：网络题库已用索引={online_usage['used_indexes']}, 本地存储库已用索引={local_usage['used_indexes']}")
         
+        # 安全计算使用率，避免除零错误
+        online_usage_rate = (online_info['used']/online_info['total']*100) if online_info['total'] > 0 else 0.0
+        local_usage_rate = (local_info['used']/local_info['total']*100) if local_info['total'] > 0 else 0.0
+        
         message = f"📊 题库详细使用记录：\n\n" \
                  f"🌐 网络题库：\n" \
                  f"• 总数：{online_info['total']} 个谜题\n" \
                  f"• 已使用：{online_info['used']} 个\n" \
                  f"• 剩余：{online_info['available']} 个\n" \
-                 f"• 使用率：{online_info['used']/online_info['total']*100:.1f}%\n" \
+                 f"• 使用率：{online_usage_rate:.1f}%\n" \
                  f"• 已用索引：{online_usage['used_indexes'][:10]}{'...' if len(online_usage['used_indexes']) > 10 else ''}\n\n" \
                  f"💾 本地存储库：\n" \
                  f"• 总数：{local_info['total']} 个谜题\n" \
                  f"• 已使用：{local_info['used']} 个\n" \
                  f"• 剩余：{local_info['remaining']} 个\n" \
-                 f"• 使用率：{local_info['used']/local_info['total']*100:.1f}% (如果总数>0)\n" \
+                 f"• 使用率：{local_usage_rate:.1f}%\n" \
                  f"• 已用索引：{local_usage['used_indexes'][:10]}{'...' if len(local_usage['used_indexes']) > 10 else ''}"
         
         yield event.plain_result(message)
@@ -1405,6 +1433,9 @@ class SoupaiPlugin(Star):
         """查看当前插件配置"""
         print(f"[测试输出] 收到 /汤配置 指令")
         
+        # 确保题库已初始化
+        self._ensure_story_storages()
+        
         local_info = self.local_story_storage.get_storage_info()
         online_info = self.online_story_storage.get_storage_info()
         print(f"[测试输出] /汤配置 指令：本地存储库状态={local_info['total']}/{local_info['max_size']}, 网络题库状态={online_info['total']}")
@@ -1417,6 +1448,11 @@ class SoupaiPlugin(Star):
         }
         strategy_name = strategy_names.get(self.puzzle_source_strategy, self.puzzle_source_strategy)
         
+        # 检查存储库是否已满
+        storage_full_warning = ""
+        if local_info["available"] <= 0:
+            storage_full_warning = "\n⚠️ 本地存储库已满，自动生成已停止"
+        
         config_info = f"⚙️ 海龟汤插件配置：\n" \
                      f"• 生成谜题 LLM：{self.generate_llm_provider_id or '默认'}\n" \
                      f"• 判断问答 LLM：{self.judge_llm_provider_id or '默认'}\n" \
@@ -1424,5 +1460,5 @@ class SoupaiPlugin(Star):
                      f"• 网络题库：{online_info['total']} 个谜题 (已用: {online_info['used']}, 剩余: {online_info['available']})\n" \
                      f"• 本地存储库：{local_info['total']}/{local_info['max_size']} (已用: {local_info['used']}, 剩余: {local_info['remaining']})\n" \
                      f"• 自动生成时间：{self.auto_generate_start}:00-{self.auto_generate_end}:00\n" \
-                     f"• 谜题来源策略：{strategy_name}"
+                     f"• 谜题来源策略：{strategy_name}{storage_full_warning}"
         yield event.plain_result(config_info)

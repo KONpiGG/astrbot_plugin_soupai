@@ -173,7 +173,7 @@ class SoupaiPlugin(Star):
         self.auto_generating = False
         if self.auto_generate_task:
             self.auto_generate_task.cancel()
-        logger.info("海龟汤插件已卸载")
+        logger.info("海龟汤插件已卸载呜呜呜")
 
     async def _start_auto_generate(self):
         """启动自动生成任务"""

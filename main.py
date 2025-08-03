@@ -1013,7 +1013,20 @@ class SoupaiPlugin(Star):
                     print(f"[测试输出] 会话控制：user_input.startswith('揭晓'): {user_input.startswith('揭晓')}")
                     print(f"[测试输出] 会话控制：user_input 的每个字符: {[ord(c) for c in user_input[:10]]}")
                     print(f"[测试输出] 会话控制：user_input 是否以'验证'开头: {user_input.startswith('验证')}")
-                    
+
+                    # 允许在会话中使用 /汤状态 和 /强制结束 指令
+                    if user_input in ("/汤状态", "汤状态"):
+                        async for resp in self.check_game_status(event):
+                            await event.send(resp)
+                        return
+
+                    if user_input in ("/强制结束", "强制结束"):
+                        async for resp in self.force_end_game(event):
+                            await event.send(resp)
+                        if not self.game_state.is_game_active(group_id):
+                            controller.stop()
+                        return
+
                     # 特殊处理 /验证 指令
                     if user_input.startswith("/验证"):
                         print(f"[测试输出] 会话控制：检测到 /验证 指令，手动调用验证函数，消息ID: {getattr(event, 'message_id', 'N/A')}")

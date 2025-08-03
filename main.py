@@ -1117,13 +1117,19 @@ class SoupaiPlugin(Star):
                     print(f"[测试输出] 会话控制：开始LLM判断")
                     reply = await self.judge_question(command_part, current_answer)
                     print(f"[测试输出] 会话控制：LLM回复: '{reply}'")
-                    await event.send(event.plain_result(reply))
-
+                    
+                    # 更新问题计数
                     if question_limit is not None and game is not None:
                         game["question_count"] = game.get("question_count", 0) + 1
-                        await event.send(event.plain_result(f"🔢 已用次数：{game['question_count']}/{question_limit}"))
+                        # 将判断结果和使用次数合并到一条消息中
+                        combined_reply = f"{reply}（{game['question_count']}/{question_limit}）"
+                        await event.send(event.plain_result(combined_reply))
+                        
                         if game["question_count"] >= question_limit:
                             await event.send(event.plain_result("❗️提问次数已用完，将进入验证环节。你有2次验证机会，请使用 /验证 <推理内容>。"))
+                    else:
+                        # 如果没有问题限制，只发送判断结果
+                        await event.send(event.plain_result(reply))
 
                     # 重置超时时间
                     controller.keep(timeout=self.game_timeout, reset_timeout=True)

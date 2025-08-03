@@ -87,16 +87,18 @@ class ThreadSafeStoryStorage:
 class GameState:
     def __init__(self):
         self.active_games: Dict[str, Dict] = {}  # 群聊ID -> 游戏状态
-    
-    def start_game(self, group_id: str, puzzle: str, answer: str) -> bool:
+
+    def start_game(self, group_id: str, puzzle: str, answer: str, **extra) -> bool:
         """开始游戏，返回是否成功"""
         if group_id in self.active_games:
             return False
-        self.active_games[group_id] = {
+        game_data = {
             "puzzle": puzzle,
             "answer": answer,
-            "is_active": True
+            "is_active": True,
         }
+        game_data.update(extra)
+        self.active_games[group_id] = game_data
         return True
     
     def end_game(self, group_id: str) -> bool:
@@ -309,6 +311,15 @@ class SoupaiPlugin(Star):
         self.auto_generate_start = self.config.get("auto_generate_start", 3)
         self.auto_generate_end = self.config.get("auto_generate_end", 6)
         self.puzzle_source_strategy = self.config.get("puzzle_source_strategy", "network_first")
+
+        # 难度设置
+        self.difficulty_settings = {
+            "简单": {"limit": None, "accept_levels": ["完全还原", "核心推理正确"]},
+            "普通": {"limit": 30, "accept_levels": ["完全还原"]},
+            "困难": {"limit": 15, "accept_levels": ["完全还原"]},
+            "666开挂了": {"limit": 5, "accept_levels": ["完全还原"]},
+        }
+        self.group_difficulty: Dict[str, str] = {}
 
         # 数据存储路径: .../data/plugin_data/soupai
         plugin_dir = Path(__file__).resolve().parent
@@ -816,6 +827,24 @@ class SoupaiPlugin(Star):
             print(f"[测试输出] 判断问题异常: {e}")
             return "（判断失败，请重试）"
 
+    @filter.command("汤难度")
+    async def set_difficulty(self, event: AstrMessageEvent, level: str = ""):
+        """设置游戏难度"""
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("此功能只能在群聊中使用")
+            return
+        if self.game_state.is_game_active(group_id):
+            yield event.plain_result("当前有活跃游戏，无法修改难度")
+            return
+        if level not in self.difficulty_settings:
+            options = "/".join(self.difficulty_settings.keys())
+            current = self.group_difficulty.get(group_id, "普通")
+            yield event.plain_result(f"可选难度：{options}\n当前难度：{current}")
+            return
+        self.group_difficulty[group_id] = level
+        yield event.plain_result(f"难度已设置为 {level}")
+
     # 🎮 开始游戏指令
     @filter.command("汤")
     async def start_soupai_game(self, event: AstrMessageEvent):
@@ -872,11 +901,30 @@ class SoupaiPlugin(Star):
                 return
             
             print(f"[测试输出] /汤 指令：最终获取谜题结果 - 题面: {puzzle[:20]}..., 答案: {answer[:20]}...")
-            
-            if self.game_state.start_game(group_id, puzzle, answer):
+
+            difficulty = self.group_difficulty.get(group_id, "普通")
+            diff_conf = self.difficulty_settings.get(difficulty, self.difficulty_settings["普通"])
+
+            if self.game_state.start_game(
+                group_id,
+                puzzle,
+                answer,
+                difficulty=difficulty,
+                question_limit=diff_conf["limit"],
+                question_count=0,
+                verification_attempts=0,
+                accept_levels=diff_conf["accept_levels"],
+            ):
                 print(f"[测试输出] /汤 指令：游戏启动成功，群ID: {group_id}")
-                yield event.plain_result(f"🎮 海龟汤游戏开始！\n\n📖 题面：{puzzle}\n\n💡 请直接提问或陈述，我会回答：是、否、是也不是\n💡 输入 /揭晓 可以查看完整故事")
-                
+                extra = ""
+                if diff_conf["limit"] is not None:
+                    extra = f"\n模式：{difficulty}（{diff_conf['limit']} 次提问）"
+                else:
+                    extra = f"\n模式：{difficulty}（无限提问）"
+                yield event.plain_result(
+                    f"🎮 海龟汤游戏开始！{extra}\n\n📖 题面：{puzzle}\n\n💡 请直接提问或陈述，我会回答：是、否、是也不是\n💡 输入 /揭晓 可以查看完整故事"
+                )
+
                 # 启动会话控制
                 await self._start_game_session(event, group_id, answer)
             else:
@@ -1036,20 +1084,34 @@ class SoupaiPlugin(Star):
                         print(f"[测试输出] 会话控制：消息已@bot，继续处理问答")
                     
                     # Step 3: 是@bot的自然语言提问，触发 LLM 判断
+                    game = self.game_state.get_game(group_id)
+                    question_limit = game.get("question_limit") if game else None
+                    question_count = game.get("question_count", 0) if game else 0
+                    if question_limit is not None and question_count >= question_limit:
+                        remaining = 2 - game.get("verification_attempts", 0)
+                        await event.send(event.plain_result(f"❗️提问次数已用完，请使用 /验证 进行猜测（剩余{remaining}次验证机会）"))
+                        return
+
                     print(f"[测试输出] 会话控制：处理@bot的游戏问答消息: '{user_input}'")
-                    
+
                     # 处理游戏问答消息
                     command_part = user_input.strip()  # 直接使用 plain_text
                     logger.info(f"处理游戏问答消息: '{command_part}'")
                     print(f"[测试输出] 会话控制：处理游戏问答消息: '{command_part}'")
-                    
+
                     # 使用 LLM 判断回答（是否问答）
                     logger.info(f"使用 LLM 判断游戏问答: '{command_part}'")
                     print(f"[测试输出] 会话控制：开始LLM判断")
                     reply = await self.judge_question(command_part, current_answer)
                     print(f"[测试输出] 会话控制：LLM回复: '{reply}'")
                     await event.send(event.plain_result(reply))
-                    
+
+                    if question_limit is not None and game is not None:
+                        game["question_count"] = game.get("question_count", 0) + 1
+                        await event.send(event.plain_result(f"🔢 已用次数：{game['question_count']}/{question_limit}"))
+                        if game["question_count"] >= question_limit:
+                            await event.send(event.plain_result("❗️提问次数已用完，将进入验证环节。你有2次验证机会，请使用 /验证 <推理内容>。"))
+
                     # 重置超时时间
                     controller.keep(timeout=self.game_timeout, reset_timeout=True)
                     print(f"[测试输出] 会话控制：重置超时时间")
@@ -1181,26 +1243,36 @@ class SoupaiPlugin(Star):
         """在会话控制中处理验证逻辑"""
         try:
             print(f"[测试输出] 会话验证：开始验证推理: '{user_guess}'")
-            
+
             # 验证用户推理
             result = await self.verify_user_guess(user_guess, answer)
-            print(f"[测试输出] 会话验证：验证结果 - 等级:{result.level}, 是否猜中:{result.is_correct}")
-            
+
+            group_id = event.get_group_id()
+            game = self.game_state.get_game(group_id) if group_id else None
+            accept_levels = game.get("accept_levels", ["完全还原", "核心推理正确"]) if game else ["完全还原", "核心推理正确"]
+            is_correct = result.level in accept_levels
+            print(f"[测试输出] 会话验证：验证结果 - 等级:{result.level}, 是否猜中:{is_correct}")
+
             # 返回验证结果
             response = f"等级：{result.level}\n评价：{result.comment}"
             await event.send(event.plain_result(response))
-            
-            # 如果猜中了，结束游戏
-            if result.is_correct:
+
+            if is_correct:
                 print(f"[测试输出] 会话验证：用户猜中，结束游戏")
                 await event.send(event.plain_result(f"🎉 恭喜！你猜中了！\n\n📖 完整故事：{answer}\n\n游戏结束！"))
-                # 结束游戏
-                group_id = event.get_group_id()
                 if group_id:
                     self.game_state.end_game(group_id)
-                # 注意：这里不能直接结束会话，因为会话控制在外层
-                # 返回 True 表示需要结束会话，但实际结束由外层处理
-                
+                return
+
+            if game and game.get("question_limit") is not None and game.get("question_count", 0) >= game.get("question_limit"):
+                game["verification_attempts"] = game.get("verification_attempts", 0) + 1
+                remaining = 2 - game["verification_attempts"]
+                if remaining > 0:
+                    await event.send(event.plain_result(f"❌ 验证未通过，你还有 {remaining} 次机会。"))
+                else:
+                    await event.send(event.plain_result(f"❌ 验证未通过。\n\n📖 完整故事：{answer}\n\n游戏结束！"))
+                    self.game_state.end_game(group_id)
+
         except Exception as e:
             logger.error(f"会话验证失败: {e}")
             print(f"[测试输出] 会话验证异常: {e}")

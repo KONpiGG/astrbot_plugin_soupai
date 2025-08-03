@@ -298,7 +298,7 @@ class SoupaiPlugin(Star):
         self.auto_generate_start = self.config.get("auto_generate_start", 3)
         self.auto_generate_end = self.config.get("auto_generate_end", 6)
         self.puzzle_source_strategy = self.config.get("puzzle_source_strategy", "network_first")
-        
+
         # 存储库初始化延迟到 init 方法中
         self.local_story_storage = None
         self.online_story_storage = None
@@ -310,20 +310,35 @@ class SoupaiPlugin(Star):
         self.auto_generating = False
         self.auto_generate_task = None
 
+    def _ensure_story_storages(self) -> None:
+        """确保题库存储被初始化。
+
+        在某些环境下, 插件的 ``init`` 方法可能未被调用或异常退出,
+        导致存储对象仍为 ``None``。为避免后续调用出现
+        ``'NoneType' object has no attribute 'get_story'`` 的错误, 这里
+        提供一次性惰性初始化。
+        """
+
+        if self.local_story_storage is None and hasattr(self, "data_path"):
+            storage_file = self.data_path / "soupai_stories.json"
+            self.local_story_storage = StoryStorage(
+                storage_file, self.storage_max_size, self.data_path
+            )
+
+        if self.online_story_storage is None:
+            plugin_dir = Path(__file__).resolve().parent
+            network_file = plugin_dir / "network_soupai.json"
+            self.online_story_storage = NetworkSoupaiStorage(
+                str(network_file), getattr(self, "data_path", None)
+            )
+
     async def init(self, context: Context):
         """插件初始化，此时 self.data_path 可用"""
         await super().init(context)
-        
-        # 初始化本地存储库 - 使用 AstrBot 的 data_path，确保数据持久化
-        storage_file = self.data_path / "soupai_stories.json"
-        self.local_story_storage = StoryStorage(storage_file, self.storage_max_size, self.data_path)
-        
-        # 初始化网络海龟汤存储
-        # 使用相对于插件目录的路径
-        plugin_dir = os.path.dirname(os.path.abspath(__file__))
-        network_file = os.path.join(plugin_dir, "network_soupai.json")
-        self.online_story_storage = NetworkSoupaiStorage(network_file, self.data_path)
-        
+
+        # 初始化存储对象
+        self._ensure_story_storages()
+
         # 启动自动生成任务
         asyncio.create_task(self._start_auto_generate())
         
@@ -366,6 +381,8 @@ class SoupaiPlugin(Star):
 
     async def _auto_generate_loop(self):
         """自动生成循环"""
+        # 确保在运行循环前题库已初始化
+        self._ensure_story_storages()
         while self.auto_generating:
             try:
                 # 检查本地存储库是否已满
@@ -1050,6 +1067,7 @@ class SoupaiPlugin(Star):
     async def get_story_by_strategy(self, strategy: str) -> Optional[Tuple[str, str]]:
         """根据策略获取故事，返回 (puzzle, answer) 或 None"""
         import random
+        self._ensure_story_storages()
         
         if strategy == "network_first":
             # 策略1：优先网络题库 -> 本地存储库 -> LLM现场生成
@@ -1276,7 +1294,7 @@ class SoupaiPlugin(Star):
     async def check_backup_status(self, event: AstrMessageEvent):
         """查看备用故事状态"""
         print(f"[测试输出] 收到 /备用状态 指令")
-        
+        self._ensure_story_storages()
         storage_info = self.local_story_storage.get_storage_info()
         online_info = self.online_story_storage.get_storage_info()
         status = "🟢 运行中" if self.auto_generating else "🔴 已停止"
@@ -1299,11 +1317,13 @@ class SoupaiPlugin(Star):
     async def reset_story_storage(self, event: AstrMessageEvent):
         """重置题库使用记录（仅管理员）"""
         print(f"[测试输出] 收到 /重置题库 指令")
-        
+
+        self._ensure_story_storages()
+
         # 重置网络题库使用记录
         self.online_story_storage.reset_usage()
         online_info = self.online_story_storage.get_storage_info()
-        
+
         # 重置本地存储库使用记录
         self.local_story_storage.reset_usage()
         local_info = self.local_story_storage.get_storage_info()
@@ -1322,11 +1342,13 @@ class SoupaiPlugin(Star):
     async def show_storage_details(self, event: AstrMessageEvent):
         """查看题库详细使用记录（仅管理员）"""
         print(f"[测试输出] 收到 /题库详情 指令")
-        
+
+        self._ensure_story_storages()
+
         # 获取网络题库详细信息
         online_info = self.online_story_storage.get_storage_info()
         online_usage = self.online_story_storage.get_usage_info()
-        
+
         # 获取本地存储库详细信息
         local_info = self.local_story_storage.get_storage_info()
         local_usage = self.local_story_storage.get_usage_info()

@@ -832,7 +832,7 @@ class SoupaiPlugin(Star):
                     else:
                         print(f"[测试输出] 会话控制：不是 /揭晓 指令")
                     
-                    # 检查是否是其他指令，如果是则忽略，让指令处理器处理
+                    # Step 1: 检查是否是 /开头的命令，如果是则忽略，让指令处理器处理
                     if user_input.startswith("/"):
                         print(f"[测试输出] 会话控制：检测到指令 '{user_input}'，忽略让指令处理器处理")
                         # 不处理指令，让事件继续传播到指令处理器
@@ -840,8 +840,15 @@ class SoupaiPlugin(Star):
                     else:
                         print(f"[测试输出] 会话控制：不是其他指令")
                     
-                    # 移除@bot限制，所有消息都进行游戏问答
-                    print(f"[测试输出] 会话控制：处理游戏问答消息: '{user_input}'")
+                    # Step 2: 检查是否 @了 bot，只有@bot的消息才触发问答判断
+                    if not self._is_at_bot(event):
+                        print(f"[测试输出] 会话控制：用户未@bot，跳过是否判断")
+                        return
+                    else:
+                        print(f"[测试输出] 会话控制：消息已@bot，继续处理问答")
+                    
+                    # Step 3: 是@bot的自然语言提问，触发 LLM 判断
+                    print(f"[测试输出] 会话控制：处理@bot的游戏问答消息: '{user_input}'")
                     
                     # 处理游戏问答消息
                     command_part = user_input.strip()  # 直接使用 plain_text
@@ -885,6 +892,15 @@ class SoupaiPlugin(Star):
             logger.error(f"启动游戏会话失败: {e}")
             print(f"[测试输出] 启动游戏会话失败: {e}")
             await event.send(event.plain_result(f"启动游戏会话失败：{e}"))
+
+    def _is_at_bot(self, event: AstrMessageEvent) -> bool:
+        """检查消息是否@了bot"""
+        from astrbot.api.message_components import At
+        bot_id = "3999329688"
+        for comp in event.message_obj.message:
+            if isinstance(comp, At) and str(comp.qq) == str(bot_id):
+                return True
+        return False
 
     async def _handle_verification_in_session(self, event: AstrMessageEvent, user_guess: str, answer: str):
         """在会话控制中处理验证逻辑"""

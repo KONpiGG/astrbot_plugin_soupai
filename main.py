@@ -24,22 +24,29 @@ class ThreadSafeStoryStorage:
         self.used_indexes: set[int] = set()
         self.lock = threading.Lock()  # 线程锁
         self.usage_file = self.data_path / f"{storage_name}_usage.pkl" if self.data_path else None
+        self.usage_backup_file = self.data_path / f"{storage_name}_usage.json" if self.data_path else None
         self.load_usage_record()
     
     def load_usage_record(self):
         """从文件加载使用记录"""
-        if not self.usage_file:
+        if not self.usage_file and not self.usage_backup_file:
             self.used_indexes = set()
             return
-            
+
         try:
-            if self.usage_file.exists():
+            if self.usage_file and self.usage_file.exists():
                 with open(self.usage_file, 'rb') as f:
                     self.used_indexes = pickle.load(f)
                 logger.info(f"从 {self.usage_file} 加载了 {len(self.used_indexes)} 个使用记录")
+            elif self.usage_backup_file and self.usage_backup_file.exists():
+                with open(self.usage_backup_file, 'r', encoding='utf-8') as f:
+                    self.used_indexes = set(json.load(f))
+                logger.info(
+                    f"从 {self.usage_backup_file} 加载了 {len(self.used_indexes)} 个使用记录")
             else:
                 self.used_indexes = set()
-                logger.info(f"使用记录文件不存在，创建新的记录: {self.usage_file}")
+                logger.info(
+                    f"使用记录文件不存在，创建新的记录: {self.usage_file or self.usage_backup_file}")
         except Exception as e:
             logger.error(f"加载使用记录失败: {e}")
             self.used_indexes = set()
@@ -53,7 +60,11 @@ class ThreadSafeStoryStorage:
             self.usage_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.usage_file, 'wb') as f:
                 pickle.dump(self.used_indexes, f)
-            logger.info(f"保存了 {len(self.used_indexes)} 个使用记录到 {self.usage_file}")
+            if self.usage_backup_file:
+                with open(self.usage_backup_file, 'w', encoding='utf-8') as f:
+                    json.dump(list(self.used_indexes), f, ensure_ascii=False, indent=2)
+            logger.info(
+                f"保存了 {len(self.used_indexes)} 个使用记录到 {self.usage_file}")
         except Exception as e:
             logger.error(f"保存使用记录失败: {e}")
     
@@ -289,7 +300,7 @@ class SoupaiPlugin(Star):
         super().__init__(context)
         self.config = config
         self.game_state = GameState()
-        
+
         # 获取配置值
         self.generate_llm_provider_id = self.config.get("generate_llm_provider", "")
         self.judge_llm_provider_id = self.config.get("judge_llm_provider", "")
@@ -298,6 +309,11 @@ class SoupaiPlugin(Star):
         self.auto_generate_start = self.config.get("auto_generate_start", 3)
         self.auto_generate_end = self.config.get("auto_generate_end", 6)
         self.puzzle_source_strategy = self.config.get("puzzle_source_strategy", "network_first")
+
+        # 数据存储路径: .../data/plugin_data/soupai
+        plugin_dir = Path(__file__).resolve().parent
+        self.data_path = plugin_dir.parent.parent / "plugin_data" / "soupai"
+        self.data_path.mkdir(parents=True, exist_ok=True)
 
         # 存储库初始化延迟到 init 方法中
         self.local_story_storage = None
@@ -320,23 +336,16 @@ class SoupaiPlugin(Star):
         """
 
         if self.local_story_storage is None:
-            # 获取 data_path，如果还没有设置则使用默认路径
-            data_path = getattr(self, "data_path", None)
-            if data_path is None:
-                # 如果 data_path 还没有设置，使用插件目录作为默认路径
-                plugin_dir = Path(__file__).resolve().parent
-                data_path = plugin_dir / "data"
-            
-            storage_file = data_path / "soupai_stories.json"
+            storage_file = self.data_path / "soupai_stories.json"
             self.local_story_storage = StoryStorage(
-                storage_file, self.storage_max_size, data_path
+                storage_file, self.storage_max_size, self.data_path
             )
 
         if self.online_story_storage is None:
             plugin_dir = Path(__file__).resolve().parent
             network_file = plugin_dir / "network_soupai.json"
             self.online_story_storage = NetworkSoupaiStorage(
-                str(network_file), getattr(self, "data_path", None)
+                str(network_file), self.data_path
             )
 
     async def init(self, context: Context):

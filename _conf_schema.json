@@ -34,5 +34,16 @@
     "type": "int",
     "hint": "每天自动生成备用故事的结束时间（小时，24小时制）",
     "default": 6
+  },
+  "puzzle_source_strategy": {
+    "description": "谜题来源策略",
+    "type": "string",
+    "hint": "选择从网络题库还是 AI 生成获取谜题",
+    "default": "network_first",
+    "options": [
+      "network_first",
+      "random",
+      "ai_first"
+    ]
   }
 } 

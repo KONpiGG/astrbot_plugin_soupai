@@ -1,6 +1,9 @@
 import json
 import asyncio
 import os
+import threading
+import pickle
+from pathlib import Path
 from datetime import datetime, time
 from typing import Dict, Optional, Tuple, List
 from astrbot.api.event import filter, AstrMessageEvent
@@ -10,6 +13,64 @@ from astrbot.api import logger, AstrBotConfig
 from astrbot.core.utils.session_waiter import session_waiter, SessionController, SessionFilter
 from astrbot.api.message_components import At
 
+
+# 线程安全的题库管理基类
+class ThreadSafeStoryStorage:
+    """线程安全的题库管理基类，支持持久化使用记录"""
+    
+    def __init__(self, storage_name: str, data_path=None):
+        self.storage_name = storage_name
+        self.data_path = data_path
+        self.used_indexes: set[int] = set()
+        self.lock = threading.Lock()  # 线程锁
+        self.usage_file = self.data_path / f"{storage_name}_usage.pkl" if self.data_path else None
+        self.load_usage_record()
+    
+    def load_usage_record(self):
+        """从文件加载使用记录"""
+        if not self.usage_file:
+            self.used_indexes = set()
+            return
+            
+        try:
+            if self.usage_file.exists():
+                with open(self.usage_file, 'rb') as f:
+                    self.used_indexes = pickle.load(f)
+                logger.info(f"从 {self.usage_file} 加载了 {len(self.used_indexes)} 个使用记录")
+            else:
+                self.used_indexes = set()
+                logger.info(f"使用记录文件不存在，创建新的记录: {self.usage_file}")
+        except Exception as e:
+            logger.error(f"加载使用记录失败: {e}")
+            self.used_indexes = set()
+    
+    def save_usage_record(self):
+        """保存使用记录到文件"""
+        if not self.usage_file:
+            return
+            
+        try:
+            self.usage_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.usage_file, 'wb') as f:
+                pickle.dump(self.used_indexes, f)
+            logger.info(f"保存了 {len(self.used_indexes)} 个使用记录到 {self.usage_file}")
+        except Exception as e:
+            logger.error(f"保存使用记录失败: {e}")
+    
+    def reset_usage(self):
+        """重置使用记录"""
+        with self.lock:
+            self.used_indexes.clear()
+            self.save_usage_record()
+            logger.info(f"{self.storage_name} 使用记录已重置")
+    
+    def get_usage_info(self) -> Dict:
+        """获取使用记录信息"""
+        with self.lock:
+            return {
+                "used": len(self.used_indexes),
+                "used_indexes": list(self.used_indexes)
+            }
 
 # 游戏状态管理
 class GameState:
@@ -43,9 +104,72 @@ class GameState:
         return group_id in self.active_games
 
 
+# 网络海龟汤管理
+class NetworkSoupaiStorage(ThreadSafeStoryStorage):
+    def __init__(self, network_file: str, data_path=None):
+        # 初始化基类
+        super().__init__("network_soupai", data_path)
+        self.network_file = network_file
+        self.stories: List[Dict] = []
+        self.load_stories()
+    
+    def load_stories(self):
+        """从文件加载网络海龟汤故事"""
+        try:
+            if os.path.exists(self.network_file):
+                with open(self.network_file, 'r', encoding='utf-8') as f:
+                    self.stories = json.load(f)
+                logger.info(f"从 {self.network_file} 加载了 {len(self.stories)} 个网络海龟汤故事")
+            else:
+                self.stories = []
+                logger.warning(f"网络海龟汤文件不存在: {self.network_file}")
+        except Exception as e:
+            logger.error(f"加载网络海龟汤失败: {e}")
+            self.stories = []
+    
+    def get_story(self) -> Optional[Tuple[str, str]]:
+        """从网络题库获取一个故事，避免重复（线程安全）"""
+        if not self.stories:
+            return None
+        
+        with self.lock:
+            # 获取所有可用的索引（排除已使用的）
+            available_indexes = [i for i in range(len(self.stories)) if i not in self.used_indexes]
+            
+            # 如果没有可用题目，清空已用记录，重新开始一轮
+            if not available_indexes:
+                logger.info("网络题库已全部使用完毕，清空记录重新开始")
+                self.used_indexes.clear()
+                available_indexes = list(range(len(self.stories)))
+                # 立即保存重置后的状态
+                self.save_usage_record()
+            
+            # 从可用索引中随机选择一个
+            import random
+            selected = random.choice(available_indexes)
+            self.used_indexes.add(selected)
+            
+            # 保存使用记录
+            self.save_usage_record()
+            
+            story = self.stories[selected]
+            logger.info(f"从网络题库获取故事，索引: {selected}, 已使用: {len(self.used_indexes)}/{len(self.stories)}")
+            return story["puzzle"], story["answer"]
+    
+    def get_storage_info(self) -> Dict:
+        """获取网络题库信息"""
+        usage_info = self.get_usage_info()
+        return {
+            "total": len(self.stories),
+            "available": len(self.stories) - usage_info["used"],
+            "used": usage_info["used"]
+        }
+
 # 存储库管理
-class StoryStorage:
-    def __init__(self, storage_file: str, max_size: int = 50):
+class StoryStorage(ThreadSafeStoryStorage):
+    def __init__(self, storage_file: str, max_size: int = 50, data_path=None):
+        # 初始化基类
+        super().__init__("local_storage", data_path)
         self.storage_file = storage_file
         self.max_size = max_size
         self.stories: List[Dict] = []
@@ -54,10 +178,11 @@ class StoryStorage:
     def load_stories(self):
         """从文件加载故事"""
         try:
-            if os.path.exists(self.storage_file):
-                with open(self.storage_file, 'r', encoding='utf-8') as f:
+            storage_path = self.storage_file if isinstance(self.storage_file, str) else str(self.storage_file)
+            if os.path.exists(storage_path):
+                with open(storage_path, 'r', encoding='utf-8') as f:
                     self.stories = json.load(f)
-                logger.info(f"从 {self.storage_file} 加载了 {len(self.stories)} 个故事")
+                logger.info(f"从 {storage_path} 加载了 {len(self.stories)} 个故事")
             else:
                 self.stories = []
                 logger.info("存储库文件不存在，创建新的存储库")
@@ -68,47 +193,71 @@ class StoryStorage:
     def save_stories(self):
         """保存故事到文件"""
         try:
+            storage_path = self.storage_file if isinstance(self.storage_file, str) else str(self.storage_file)
             # 确保目录存在
-            os.makedirs(os.path.dirname(self.storage_file), exist_ok=True)
-            with open(self.storage_file, 'w', encoding='utf-8') as f:
+            os.makedirs(os.path.dirname(storage_path), exist_ok=True)
+            with open(storage_path, 'w', encoding='utf-8') as f:
                 json.dump(self.stories, f, ensure_ascii=False, indent=2)
-            logger.info(f"保存了 {len(self.stories)} 个故事到 {self.storage_file}")
+            logger.info(f"保存了 {len(self.stories)} 个故事到 {storage_path}")
         except Exception as e:
             logger.error(f"保存故事失败: {e}")
     
     def add_story(self, puzzle: str, answer: str) -> bool:
         """添加故事到存储库"""
-        if len(self.stories) >= self.max_size:
-            # 移除最旧的故事
-            self.stories.pop(0)
-            logger.info("存储库已满，移除最旧的故事")
-        
-        story = {
-            "puzzle": puzzle,
-            "answer": answer,
-            "created_at": datetime.now().isoformat()
-        }
-        self.stories.append(story)
-        self.save_stories()
-        logger.info(f"添加新故事到存储库，当前存储库大小: {len(self.stories)}")
-        return True
+        with self.lock:
+            if len(self.stories) >= self.max_size:
+                # 移除最旧的故事
+                self.stories.pop(0)
+                logger.info("存储库已满，移除最旧的故事")
+            
+            story = {
+                "puzzle": puzzle,
+                "answer": answer,
+                "created_at": datetime.now().isoformat()
+            }
+            self.stories.append(story)
+            self.save_stories()
+            logger.info(f"添加新故事到存储库，当前存储库大小: {len(self.stories)}")
+            return True
     
     def get_story(self) -> Optional[Tuple[str, str]]:
-        """从存储库获取一个故事"""
+        """从存储库获取一个故事，避免重复（线程安全）"""
         if not self.stories:
             return None
         
-        story = self.stories.pop(0)  # 移除并返回第一个故事
-        self.save_stories()
-        logger.info(f"从存储库获取故事，剩余: {len(self.stories)}")
-        return story["puzzle"], story["answer"]
+        with self.lock:
+            # 获取所有可用的索引（排除已使用的）
+            available_indexes = [i for i in range(len(self.stories)) if i not in self.used_indexes]
+            
+            # 如果没有可用题目，清空已用记录，重新开始一轮
+            if not available_indexes:
+                logger.info("本地存储库已全部使用完毕，清空记录重新开始")
+                self.used_indexes.clear()
+                available_indexes = list(range(len(self.stories)))
+                # 立即保存重置后的状态
+                self.save_usage_record()
+            
+            # 从可用索引中随机选择一个
+            import random
+            selected = random.choice(available_indexes)
+            self.used_indexes.add(selected)
+            
+            # 保存使用记录
+            self.save_usage_record()
+            
+            story = self.stories[selected]
+            logger.info(f"从本地存储库获取故事，索引: {selected}, 已使用: {len(self.used_indexes)}/{len(self.stories)}")
+            return story["puzzle"], story["answer"]
     
     def get_storage_info(self) -> Dict:
         """获取存储库信息"""
+        usage_info = self.get_usage_info()
         return {
             "total": len(self.stories),
             "max_size": self.max_size,
-            "available": self.max_size - len(self.stories)
+            "available": self.max_size - len(self.stories),
+            "used": usage_info["used"],
+            "remaining": len(self.stories) - usage_info["used"]
         }
 
 
@@ -148,12 +297,11 @@ class SoupaiPlugin(Star):
         self.storage_max_size = self.config.get("storage_max_size", 50)
         self.auto_generate_start = self.config.get("auto_generate_start", 3)
         self.auto_generate_end = self.config.get("auto_generate_end", 6)
+        self.puzzle_source_strategy = self.config.get("puzzle_source_strategy", "network_first")
         
-        # 初始化存储库 - 使用 AstrBot 的 data 目录，确保数据持久化
-        data_dir = os.path.join("data", "plugins", "soupai")
-        os.makedirs(data_dir, exist_ok=True)
-        storage_file = os.path.join(data_dir, "soupai_stories.json")
-        self.story_storage = StoryStorage(storage_file, self.storage_max_size)
+        # 存储库初始化延迟到 init 方法中
+        self.local_story_storage = None
+        self.online_story_storage = None
         
         # 防止重复调用的状态
         self.generating_games = set()  # 正在生成谜题的群聊ID集合
@@ -161,11 +309,26 @@ class SoupaiPlugin(Star):
         # 自动生成状态
         self.auto_generating = False
         self.auto_generate_task = None
+
+    async def init(self, context: Context):
+        """插件初始化，此时 self.data_path 可用"""
+        await super().init(context)
+        
+        # 初始化本地存储库 - 使用 AstrBot 的 data_path，确保数据持久化
+        storage_file = self.data_path / "soupai_stories.json"
+        self.local_story_storage = StoryStorage(storage_file, self.storage_max_size, self.data_path)
+        
+        # 初始化网络海龟汤存储
+        # 使用相对于插件目录的路径
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        network_file = os.path.join(plugin_dir, "network_soupai.json")
+        self.online_story_storage = NetworkSoupaiStorage(network_file, self.data_path)
         
         # 启动自动生成任务
         asyncio.create_task(self._start_auto_generate())
         
-        logger.info(f"海龟汤插件已加载，配置: 生成LLM提供商={self.generate_llm_provider_id}, 判断LLM提供商={self.judge_llm_provider_id}, 超时时间={self.game_timeout}秒, 存储库大小={self.storage_max_size}")
+        online_info = self.online_story_storage.get_storage_info()
+        logger.info(f"海龟汤插件已加载，配置: 生成LLM提供商={self.generate_llm_provider_id}, 判断LLM提供商={self.judge_llm_provider_id}, 超时时间={self.game_timeout}秒, 网络题库={online_info['total']}个谜题, 本地存储库大小={self.storage_max_size}, 谜题来源策略={self.puzzle_source_strategy}")
 
     async def terminate(self):
         """插件卸载时清理资源"""
@@ -205,16 +368,16 @@ class SoupaiPlugin(Star):
         """自动生成循环"""
         while self.auto_generating:
             try:
-                # 检查存储库是否已满
-                storage_info = self.story_storage.get_storage_info()
+                # 检查本地存储库是否已满
+                storage_info = self.local_story_storage.get_storage_info()
                 if storage_info["available"] <= 0:
-                    logger.info("存储库已满，停止自动生成")
+                    logger.info("本地存储库已满，停止自动生成")
                     break
                 
                 # 生成一个故事
                 puzzle, answer = await self.generate_story_with_llm()
                 if puzzle and answer and not puzzle.startswith("（"):
-                    self.story_storage.add_story(puzzle, answer)
+                    self.local_story_storage.add_story(puzzle, answer)
                     logger.info("自动生成故事成功")
                 else:
                     logger.warning("自动生成故事失败")
@@ -643,48 +806,30 @@ class SoupaiPlugin(Star):
             logger.info(f"开始为群 {group_id} 生成谜题")
             print(f"[测试输出] /汤 指令：开始为群 {group_id} 生成谜题")
             
-            # 优先从存储库获取故事
-            story = self.story_storage.get_story()
-            if story:
-                puzzle, answer = story
-                logger.info(f"从存储库获取故事，剩余: {self.story_storage.get_storage_info()['total']}")
-                print(f"[测试输出] /汤 指令：从存储库获取故事成功，剩余: {self.story_storage.get_storage_info()['total']}")
-                
-                # 开始游戏
-                if self.game_state.start_game(group_id, puzzle, answer):
-                    print(f"[测试输出] /汤 指令：游戏启动成功，群ID: {group_id}")
-                    yield event.plain_result(f"🎮 海龟汤游戏开始！\n\n📖 题面：{puzzle}\n\n💡 请直接提问或陈述，我会回答：是、否、是也不是\n💡 输入 /揭晓 可以查看完整故事")
-                    
-                    # 启动会话控制
-                    await self._start_game_session(event, group_id, answer)
-                else:
-                    print(f"[测试输出] /汤 指令：游戏启动失败，群ID: {group_id}")
-                    yield event.plain_result("游戏启动失败，请重试")
-                
-                # 移除生成状态，因为故事已经准备完成
+            # 根据策略获取谜题
+            strategy = self.puzzle_source_strategy
+            print(f"[测试输出] /汤 指令：使用策略 '{strategy}' 获取谜题")
+            
+            # 使用统一的策略方法获取故事
+            story = await self.get_story_by_strategy(strategy)
+            
+            if not story:
+                print(f"[测试输出] /汤 指令：策略执行失败，无法获取谜题")
+                yield event.plain_result("获取谜题失败，请重试")
                 self.generating_games.discard(group_id)
-                logger.info(f"群 {group_id} 故事准备完成，移除生成状态")
-                print(f"[测试输出] /汤 指令：故事准备完成，移除生成状态，群ID: {group_id}")
                 return
             
-            # 存储库为空，现场生成
-            print(f"[测试输出] /汤 指令：存储库为空，开始现场生成谜题")
-            yield event.plain_result("正在生成海龟汤谜题，请稍候...")
+            puzzle, answer = story
             
-            # 生成谜题
-            puzzle, answer = await self.generate_story_with_llm()
-            print(f"[测试输出] /汤 指令：现场生成谜题结果 - 题面: {puzzle[:20]}..., 答案: {answer[:20]}...")
-            
+            # 检查LLM生成是否失败
             if puzzle == "（无法生成题面，请先配置大语言模型）":
-                print(f"[测试输出] /汤 指令：生成谜题失败 - {answer}")
+                print(f"[测试输出] /汤 指令：LLM生成失败 - {answer}")
                 yield event.plain_result(f"生成谜题失败：{answer}")
-                # 生成失败时也要移除生成状态
                 self.generating_games.discard(group_id)
-                logger.info(f"群 {group_id} 生成失败，移除生成状态")
-                print(f"[测试输出] /汤 指令：生成失败，移除生成状态，群ID: {group_id}")
                 return
-
-            # 开始游戏
+            
+            print(f"[测试输出] /汤 指令：最终获取谜题结果 - 题面: {puzzle[:20]}..., 答案: {answer[:20]}...")
+            
             if self.game_state.start_game(group_id, puzzle, answer):
                 print(f"[测试输出] /汤 指令：游戏启动成功，群ID: {group_id}")
                 yield event.plain_result(f"🎮 海龟汤游戏开始！\n\n📖 题面：{puzzle}\n\n💡 请直接提问或陈述，我会回答：是、否、是也不是\n💡 输入 /揭晓 可以查看完整故事")
@@ -902,6 +1047,92 @@ class SoupaiPlugin(Star):
                 return True
         return False
 
+    async def get_story_by_strategy(self, strategy: str) -> Optional[Tuple[str, str]]:
+        """根据策略获取故事，返回 (puzzle, answer) 或 None"""
+        import random
+        
+        if strategy == "network_first":
+            # 策略1：优先网络题库 -> 本地存储库 -> LLM现场生成
+            print(f"[测试输出] 策略执行：使用 network_first 策略")
+            
+            # 1. 检查网络题库
+            story = self.online_story_storage.get_story()
+            if story:
+                print(f"[测试输出] 策略执行：从网络题库获取故事成功，剩余: {self.online_story_storage.get_storage_info()['total']}")
+                return story
+            
+            print(f"[测试输出] 策略执行：网络题库为空，检查本地存储库")
+            # 2. 检查本地存储库
+            story = self.local_story_storage.get_story()
+            if story:
+                print(f"[测试输出] 策略执行：从本地存储库获取故事成功，剩余: {self.local_story_storage.get_storage_info()['total']}")
+                return story
+            
+            print(f"[测试输出] 策略执行：本地存储库也为空，需要LLM现场生成")
+            # 3. LLM现场生成
+            return await self.generate_story_with_llm()
+                
+        elif strategy == "ai_first":
+            # 策略2：优先本地存储库 -> 网络题库 -> LLM现场生成
+            print(f"[测试输出] 策略执行：使用 ai_first 策略")
+            
+            # 1. 检查本地存储库
+            story = self.local_story_storage.get_story()
+            if story:
+                print(f"[测试输出] 策略执行：从本地存储库获取故事成功，剩余: {self.local_story_storage.get_storage_info()['total']}")
+                return story
+            
+            print(f"[测试输出] 策略执行：本地存储库为空，检查网络题库")
+            # 2. 检查网络题库
+            story = self.online_story_storage.get_story()
+            if story:
+                print(f"[测试输出] 策略执行：从网络题库获取故事成功，剩余: {self.online_story_storage.get_storage_info()['total']}")
+                return story
+            
+            print(f"[测试输出] 策略执行：网络题库也为空，需要LLM现场生成")
+            # 3. LLM现场生成
+            return await self.generate_story_with_llm()
+                
+        elif strategy == "random":
+            # 策略3：随机选择网络题库或本地存储库，失败时使用LLM现场生成
+            print(f"[测试输出] 策略执行：使用 random 策略")
+            
+            # 随机决定这次从网络题库还是本地存储库获取
+            if random.choice(["network", "storage"]) == "network":
+                print(f"[测试输出] 策略执行：随机策略选择网络题库")
+                # 参考策略1的网络题库逻辑
+                story = self.online_story_storage.get_story()
+                if story:
+                    print(f"[测试输出] 策略执行：从网络题库获取故事成功，剩余: {self.online_story_storage.get_storage_info()['total']}")
+                    return story
+                
+                print(f"[测试输出] 策略执行：网络题库为空，检查本地存储库")
+                story = self.local_story_storage.get_story()
+                if story:
+                    print(f"[测试输出] 策略执行：从本地存储库获取故事成功，剩余: {self.local_story_storage.get_storage_info()['total']}")
+                    return story
+                
+                print(f"[测试输出] 策略执行：本地存储库也为空，需要LLM现场生成")
+                return await self.generate_story_with_llm()
+            else:
+                print(f"[测试输出] 策略执行：随机策略选择本地存储库")
+                # 参考策略2的本地存储库逻辑
+                story = self.local_story_storage.get_story()
+                if story:
+                    print(f"[测试输出] 策略执行：从本地存储库获取故事成功，剩余: {self.local_story_storage.get_storage_info()['total']}")
+                    return story
+                
+                print(f"[测试输出] 策略执行：本地存储库为空，检查网络题库")
+                story = self.online_story_storage.get_story()
+                if story:
+                    print(f"[测试输出] 策略执行：从网络题库获取故事成功，剩余: {self.online_story_storage.get_storage_info()['total']}")
+                    return story
+                
+                print(f"[测试输出] 策略执行：网络题库也为空，需要LLM现场生成")
+                return await self.generate_story_with_llm()
+        
+        return None
+
     async def _handle_verification_in_session(self, event: AstrMessageEvent, user_guess: str, answer: str):
         """在会话控制中处理验证逻辑"""
         try:
@@ -1020,7 +1251,9 @@ class SoupaiPlugin(Star):
                 not user_input.startswith("/强制结束") and
                 not user_input.startswith("/备用开始") and
                 not user_input.startswith("/备用状态") and
-                not user_input.startswith("/汤配置")):
+                not user_input.startswith("/汤配置") and
+                not user_input.startswith("/重置题库") and
+                not user_input.startswith("/题库详情")):
                 print(f"[测试输出] 全局拦截器：拦截指令 '{user_input}'")
                 yield event.plain_result("⚠️ 系统正在生成备用故事，请稍后再试或使用 /备用结束 停止生成")
 
@@ -1044,16 +1277,75 @@ class SoupaiPlugin(Star):
         """查看备用故事状态"""
         print(f"[测试输出] 收到 /备用状态 指令")
         
-        storage_info = self.story_storage.get_storage_info()
+        storage_info = self.local_story_storage.get_storage_info()
+        online_info = self.online_story_storage.get_storage_info()
         status = "🟢 运行中" if self.auto_generating else "🔴 已停止"
         
-        print(f"[测试输出] /备用状态 指令：生成状态={status}, 存储库={storage_info['total']}/{storage_info['max_size']}")
+        print(f"[测试输出] /备用状态 指令：生成状态={status}, 本地存储库={storage_info['total']}/{storage_info['max_size']}")
         
         message = f"📚 备用故事状态：\n" \
                  f"• 生成状态：{status}\n" \
-                 f"• 存储库：{storage_info['total']}/{storage_info['max_size']}\n" \
+                 f"• 本地存储库：{storage_info['total']}/{storage_info['max_size']}\n" \
+                 f"• 已使用题目：{storage_info['used']}\n" \
+                 f"• 剩余题目：{storage_info['remaining']}\n" \
                  f"• 可用空间：{storage_info['available']}\n" \
+                 f"• 网络题库：{online_info['total']} 个 (已用: {online_info['used']}, 剩余: {online_info['available']})\n" \
                  f"• 自动生成时间：{self.auto_generate_start}:00-{self.auto_generate_end}:00"
+        
+        yield event.plain_result(message)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("重置题库")
+    async def reset_story_storage(self, event: AstrMessageEvent):
+        """重置题库使用记录（仅管理员）"""
+        print(f"[测试输出] 收到 /重置题库 指令")
+        
+        # 重置网络题库使用记录
+        self.online_story_storage.reset_usage()
+        online_info = self.online_story_storage.get_storage_info()
+        
+        # 重置本地存储库使用记录
+        self.local_story_storage.reset_usage()
+        local_info = self.local_story_storage.get_storage_info()
+        
+        print(f"[测试输出] /重置题库 指令：已重置所有题库使用记录")
+        
+        message = f"✅ 题库使用记录已重置！\n" \
+                 f"• 网络题库：{online_info['total']} 个谜题 (已重置)\n" \
+                 f"• 本地存储库：{local_info['total']} 个谜题 (已重置)\n" \
+                 f"• 所有题目现在都可以重新使用"
+        
+        yield event.plain_result(message)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("题库详情")
+    async def show_storage_details(self, event: AstrMessageEvent):
+        """查看题库详细使用记录（仅管理员）"""
+        print(f"[测试输出] 收到 /题库详情 指令")
+        
+        # 获取网络题库详细信息
+        online_info = self.online_story_storage.get_storage_info()
+        online_usage = self.online_story_storage.get_usage_info()
+        
+        # 获取本地存储库详细信息
+        local_info = self.local_story_storage.get_storage_info()
+        local_usage = self.local_story_storage.get_usage_info()
+        
+        print(f"[测试输出] /题库详情 指令：网络题库已用索引={online_usage['used_indexes']}, 本地存储库已用索引={local_usage['used_indexes']}")
+        
+        message = f"📊 题库详细使用记录：\n\n" \
+                 f"🌐 网络题库：\n" \
+                 f"• 总数：{online_info['total']} 个谜题\n" \
+                 f"• 已使用：{online_info['used']} 个\n" \
+                 f"• 剩余：{online_info['available']} 个\n" \
+                 f"• 使用率：{online_info['used']/online_info['total']*100:.1f}%\n" \
+                 f"• 已用索引：{online_usage['used_indexes'][:10]}{'...' if len(online_usage['used_indexes']) > 10 else ''}\n\n" \
+                 f"💾 本地存储库：\n" \
+                 f"• 总数：{local_info['total']} 个谜题\n" \
+                 f"• 已使用：{local_info['used']} 个\n" \
+                 f"• 剩余：{local_info['remaining']} 个\n" \
+                 f"• 使用率：{local_info['used']/local_info['total']*100:.1f}% (如果总数>0)\n" \
+                 f"• 已用索引：{local_usage['used_indexes'][:10]}{'...' if len(local_usage['used_indexes']) > 10 else ''}"
         
         yield event.plain_result(message)
 
@@ -1091,13 +1383,24 @@ class SoupaiPlugin(Star):
         """查看当前插件配置"""
         print(f"[测试输出] 收到 /汤配置 指令")
         
-        storage_info = self.story_storage.get_storage_info()
-        print(f"[测试输出] /汤配置 指令：存储库状态={storage_info['total']}/{storage_info['max_size']}")
+        local_info = self.local_story_storage.get_storage_info()
+        online_info = self.online_story_storage.get_storage_info()
+        print(f"[测试输出] /汤配置 指令：本地存储库状态={local_info['total']}/{local_info['max_size']}, 网络题库状态={online_info['total']}")
+        
+        # 获取策略的中文描述
+        strategy_names = {
+            "network_first": "优先网络题库→本地存储库→LLM生成",
+            "random": "随机选择网络题库或本地存储库",
+            "ai_first": "优先本地存储库→网络题库→LLM生成"
+        }
+        strategy_name = strategy_names.get(self.puzzle_source_strategy, self.puzzle_source_strategy)
         
         config_info = f"⚙️ 海龟汤插件配置：\n" \
                      f"• 生成谜题 LLM：{self.generate_llm_provider_id or '默认'}\n" \
                      f"• 判断问答 LLM：{self.judge_llm_provider_id or '默认'}\n" \
                      f"• 游戏超时：{self.game_timeout} 秒\n" \
-                     f"• 存储库大小：{storage_info['total']}/{storage_info['max_size']}\n" \
-                     f"• 自动生成时间：{self.auto_generate_start}:00-{self.auto_generate_end}:00"
+                     f"• 网络题库：{online_info['total']} 个谜题 (已用: {online_info['used']}, 剩余: {online_info['available']})\n" \
+                     f"• 本地存储库：{local_info['total']}/{local_info['max_size']} (已用: {local_info['used']}, 剩余: {local_info['remaining']})\n" \
+                     f"• 自动生成时间：{self.auto_generate_start}:00-{self.auto_generate_end}:00\n" \
+                     f"• 谜题来源策略：{strategy_name}"
         yield event.plain_result(config_info)

@@ -994,6 +994,7 @@ class SoupaiPlugin(Star):
             @session_waiter(timeout=self.game_timeout, record_history_chains=False)
             async def game_session_waiter(controller: SessionController, event: AstrMessageEvent):
                 try:
+                    print(f"[测试输出] 会话控制：进入会话控制函数，群ID: {group_id}")
                     # 从游戏状态获取答案，确保变量可用
                     game = self.game_state.get_game(group_id)
                     if not game:
@@ -1003,7 +1004,14 @@ class SoupaiPlugin(Star):
                     user_input = event.message_str.strip()
                     logger.info(f"会话控制收到消息: '{user_input}'")
                     print(f"[测试输出] 会话控制收到消息: '{user_input}'")
+                    print(f"[测试输出] 会话控制：原始消息长度: {len(event.message_str)}")
+                    print(f"[测试输出] 会话控制：user_input长度: {len(user_input)}")
+                    print(f"[测试输出] 会话控制：user_input的字节表示: {user_input.encode('utf-8')}")
                     print(f"[测试输出] 会话控制：原始消息: '{event.message_str}'")
+                    print(f"[测试输出] 会话控制：user_input in ('/查看', '查看'): {user_input in ('/查看', '查看')}")
+                    print(f"[测试输出] 会话控制：user_input == '/查看': {user_input == '/查看'}")
+                    print(f"[测试输出] 会话控制：user_input == '查看': {user_input == '查看'}")
+                    print(f"[测试输出] 会话控制：'查看' in user_input: {'查看' in user_input}")
                     print(f"[测试输出] 会话控制：消息类型: {type(event).__name__}")
                     print(f"[测试输出] 会话控制：消息来源: {event.unified_msg_origin}")
                     print(f"[测试输出] 会话控制：消息ID: {getattr(event, 'message_id', 'N/A')}")
@@ -1017,17 +1025,24 @@ class SoupaiPlugin(Star):
 
                     # 允许在会话中使用 /汤状态 和 /强制结束 指令
                     if user_input in ("/汤状态", "汤状态"):
-                        async for resp in self.check_game_status(event):
-                            await event.send(resp)
+                        await self._handle_game_status_in_session(event, group_id)
                         return
 
                     if user_input in ("/强制结束", "强制结束"):
-                        async for resp in self.force_end_game(event):
-                            await event.send(resp)
+                        await self._handle_force_end_in_session(event, group_id)
                         if not self.game_state.is_game_active(group_id):
                             controller.stop()
                         return
 
+                    if "查看" in user_input:
+                        print(f"[测试输出] 会话控制：检测到查看指令，user_input='{user_input}'")
+                        # 直接在这里发送测试消息
+                        print(f"[测试输出] 会话控制：直接发送测试消息")
+                        await event.send(event.plain_result("测试：检测到查看指令"))
+                        print(f"[测试输出] 会话控制：测试消息已发送")
+                        # 然后调用处理方法
+                        await self._handle_view_history_in_session(event, group_id)
+                        return
                     # 特殊处理 /验证 指令
                     if user_input.startswith("/验证"):
                         print(f"[测试输出] 会话控制：检测到 /验证 指令，手动调用验证函数，消息ID: {getattr(event, 'message_id', 'N/A')}")
@@ -1264,6 +1279,83 @@ class SoupaiPlugin(Star):
         
         return None
 
+    async def _handle_game_status_in_session(self, event: AstrMessageEvent, group_id: str):
+        """在会话控制中处理游戏状态查询逻辑"""
+        try:
+            print(f"[测试输出] 会话游戏状态：开始查询游戏状态，群ID: {group_id}")
+            
+            if self.game_state.is_game_active(group_id):
+                game = self.game_state.get_game(group_id)
+                print(f"[测试输出] 会话游戏状态：群 {group_id} 有活跃游戏")
+                await event.send(event.plain_result(f"🎮 当前有活跃的海龟汤游戏\n📖 题面：{game['puzzle']}"))
+            else:
+                print(f"[测试输出] 会话游戏状态：群 {group_id} 没有活跃游戏")
+                await event.send(event.plain_result("🎮 当前没有活跃的海龟汤游戏\n💡 使用 /汤 开始新游戏"))
+                
+        except Exception as e:
+            logger.error(f"会话游戏状态查询失败: {e}")
+            print(f"[测试输出] 会话游戏状态查询异常: {e}")
+            await event.send(event.plain_result(f"查询游戏状态时发生错误：{e}"))
+
+    async def _handle_force_end_in_session(self, event: AstrMessageEvent, group_id: str):
+        """在会话控制中处理强制结束游戏逻辑"""
+        try:
+            print(f"[测试输出] 会话强制结束：开始强制结束游戏，群ID: {group_id}")
+            
+            if self.game_state.end_game(group_id):
+                print(f"[测试输出] 会话强制结束：成功结束游戏，群ID: {group_id}")
+                await event.send(event.plain_result("✅ 已强制结束当前海龟汤游戏"))
+            else:
+                print(f"[测试输出] 会话强制结束：没有活跃游戏，群ID: {group_id}")
+                await event.send(event.plain_result("❌ 当前没有活跃的游戏需要结束"))
+                
+        except Exception as e:
+            logger.error(f"会话强制结束失败: {e}")
+            print(f"[测试输出] 会话强制结束异常: {e}")
+            await event.send(event.plain_result(f"强制结束游戏时发生错误：{e}"))
+
+    async def _handle_view_history_in_session(self, event: AstrMessageEvent, group_id: str):
+        """在会话控制中处理查看历史记录逻辑"""
+        try:
+            print(f"[测试输出] 会话查看历史：开始查看历史记录，群ID: {group_id}")
+            print(f"[测试输出] 会话查看历史：event.message_str='{event.message_str}'")
+            print(f"[测试输出] 会话查看历史：event.message_str.strip()='{event.message_str.strip()}'")
+            
+            # 先发送一个简单的测试消息
+            print(f"[测试输出] 会话查看历史：发送测试消息")
+            await event.send(event.plain_result("测试：正在查看历史记录..."))
+            print(f"[测试输出] 会话查看历史：测试消息已发送")
+            
+            game = self.game_state.get_game(group_id)
+            if not game:
+                print(f"[测试输出] 会话查看历史：无法获取游戏状态")
+                await event.send(event.plain_result("无法获取游戏状态"))
+                return
+                
+            history = game.get("qa_history", [])
+            print(f"[测试输出] 会话查看历史：历史记录数量: {len(history)}")
+            print(f"[测试输出] 会话查看历史：历史记录内容: {history}")
+            
+            if not history:
+                print(f"[测试输出] 会话查看历史：没有历史记录")
+                await event.send(event.plain_result("目前还没有人提问哦~"))
+                return
+                
+            lines = ["📋 提问记录："]
+            for idx, item in enumerate(history, 1):
+                lines.append(f"{idx}. 问：{item['question']}\n   答：{item['answer']}")
+            
+            response = "\n".join(lines)
+            print(f"[测试输出] 会话查看历史：发送历史记录，长度: {len(response)}")
+            print(f"[测试输出] 会话查看历史：响应内容: {response}")
+            await event.send(event.plain_result(response))
+            print(f"[测试输出] 会话查看历史：消息已发送")
+            
+        except Exception as e:
+            logger.error(f"会话查看历史失败: {e}")
+            print(f"[测试输出] 会话查看历史异常: {e}")
+            await event.send(event.plain_result(f"查看历史记录时发生错误：{e}"))
+
     async def _handle_verification_in_session(self, event: AstrMessageEvent, user_guess: str, answer: str):
         """在会话控制中处理验证逻辑"""
         try:
@@ -1328,21 +1420,31 @@ class SoupaiPlugin(Star):
     @filter.command("查看")
     async def view_question_history(self, event: AstrMessageEvent):
         """查看当前已提问的问题及回答"""
+        print(f"[测试输出] 独立/查看指令处理器被调用！")
+        print(f"[测试输出] 独立/查看指令：完整消息: '{event.message_str}'")
         group_id = event.get_group_id()
+        print(f"[测试输出] 独立/查看指令：群ID: {group_id}")
+        print(f"[测试输出] 独立/查看指令：是否有活跃游戏: {self.game_state.is_game_active(group_id)}")
+        
         if not group_id:
+            print("[测试输出] 独立/查看指令：非群聊环境")
             yield event.plain_result("此功能只能在群聊中使用")
             return
         if not self.game_state.is_game_active(group_id):
+            print("[测试输出] 独立/查看指令：没有活跃游戏")
             yield event.plain_result("当前没有活跃的海龟汤游戏")
             return
         game = self.game_state.get_game(group_id)
         history = game.get("qa_history", []) if game else []
+        print(f"[测试输出] 独立/查看指令：历史记录数量: {len(history)}")
         if not history:
+            print("[测试输出] 独立/查看指令：没有历史记录")
             yield event.plain_result("目前还没有人提问哦~")
             return
         lines = ["📋 提问记录："]
         for idx, item in enumerate(history, 1):
             lines.append(f"{idx}. 问：{item['question']}\n   答：{item['answer']}")
+        print(f"[测试输出] 独立/查看指令：发送历史记录")
         yield event.plain_result("\n".join(lines))
 
     # 🆘 强制结束游戏（管理员功能）
@@ -1415,7 +1517,8 @@ class SoupaiPlugin(Star):
                 not user_input.startswith("/备用状态") and
                 not user_input.startswith("/汤配置") and
                 not user_input.startswith("/重置题库") and
-                not user_input.startswith("/题库详情")):
+                not user_input.startswith("/题库详情") and
+                not user_input.startswith("/查看")):
                 print(f"[测试输出] 全局拦截器：拦截指令 '{user_input}'")
                 yield event.plain_result("⚠️ 系统正在生成备用故事，请稍后再试或使用 /备用结束 停止生成")
 

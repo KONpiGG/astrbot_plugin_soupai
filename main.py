@@ -96,6 +96,7 @@ class GameState:
             "puzzle": puzzle,
             "answer": answer,
             "is_active": True,
+            "qa_history": [],
         }
         game_data.update(extra)
         self.active_games[group_id] = game_data
@@ -1117,7 +1118,12 @@ class SoupaiPlugin(Star):
                     print(f"[测试输出] 会话控制：开始LLM判断")
                     reply = await self.judge_question(command_part, current_answer)
                     print(f"[测试输出] 会话控制：LLM回复: '{reply}'")
-                    
+
+                    # 记录提问和回答
+                    if game is not None:
+                        history = game.setdefault("qa_history", [])
+                        history.append({"question": command_part, "answer": reply})
+
                     # 更新问题计数
                     if question_limit is not None and game is not None:
                         game["question_count"] = game.get("question_count", 0) + 1
@@ -1318,6 +1324,26 @@ class SoupaiPlugin(Star):
         else:
             print(f"[测试输出] /汤状态 指令：群 {group_id} 没有活跃游戏")
             yield event.plain_result("🎮 当前没有活跃的海龟汤游戏\n💡 使用 /汤 开始新游戏")
+
+    @filter.command("查看")
+    async def view_question_history(self, event: AstrMessageEvent):
+        """查看当前已提问的问题及回答"""
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("此功能只能在群聊中使用")
+            return
+        if not self.game_state.is_game_active(group_id):
+            yield event.plain_result("当前没有活跃的海龟汤游戏")
+            return
+        game = self.game_state.get_game(group_id)
+        history = game.get("qa_history", []) if game else []
+        if not history:
+            yield event.plain_result("目前还没有人提问哦~")
+            return
+        lines = ["📋 提问记录："]
+        for idx, item in enumerate(history, 1):
+            lines.append(f"{idx}. 问：{item['question']}\n   答：{item['answer']}")
+        yield event.plain_result("\n".join(lines))
 
     # 🆘 强制结束游戏（管理员功能）
     @filter.permission_type(filter.PermissionType.ADMIN)

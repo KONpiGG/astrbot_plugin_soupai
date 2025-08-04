@@ -361,10 +361,26 @@ class SoupaiPlugin(Star):
 
         # 难度设置
         self.difficulty_settings = {
-            "简单": {"limit": None, "accept_levels": ["完全还原", "核心推理正确"]},
-            "普通": {"limit": 30, "accept_levels": ["完全还原"]},
-            "困难": {"limit": 15, "accept_levels": ["完全还原"]},
-            "666开挂了": {"limit": 5, "accept_levels": ["完全还原"]},
+            "简单": {
+                "limit": None,
+                "accept_levels": ["完全还原", "核心推理正确"],
+                "hint_limit": 10,
+            },
+            "普通": {
+                "limit": 30,
+                "accept_levels": ["完全还原"],
+                "hint_limit": 3,
+            },
+            "困难": {
+                "limit": 15,
+                "accept_levels": ["完全还原"],
+                "hint_limit": 1,
+            },
+            "666开挂了": {
+                "limit": 5,
+                "accept_levels": ["完全还原"],
+                "hint_limit": 0,
+            },
         }
         self.group_difficulty: Dict[str, str] = {}
 
@@ -889,6 +905,50 @@ class SoupaiPlugin(Star):
             print(f"[测试输出] 判断问题异常: {e}")
             return "（判断失败，请重试）"
 
+    # ✅ 生成方向性提示
+    async def generate_hint(self, question: str, true_answer: str) -> str:
+        """根据玩家提问生成方向性提示"""
+        if self.judge_llm_provider_id:
+            provider = self.context.get_provider_by_id(self.judge_llm_provider_id)
+            if provider is None:
+                logger.error(
+                    f"未找到指定的判断 LLM 提供商: {self.judge_llm_provider_id}"
+                )
+                return "（未配置判断 LLM，无法提供提示）"
+        else:
+            provider = self.context.get_using_provider()
+            if provider is None:
+                return "（未配置 LLM，无法提供提示）"
+
+        prompt = (
+            "你是一个推理游戏的提示助手，负责在玩家卡顿时引导其思考方向。\n\n"
+            "你将获得：\n- 故事的完整真相；\n- 玩家当前的提问或陈述内容。\n\n"
+            "你的任务是：根据玩家的说法是否靠近故事的核心逻辑，给予一句【非剧透】、【非重复】的方向性提示，帮助玩家调整提问思路。\n\n"
+            "要求如下：\n"
+            "1. 提示不能包含故事情节、动机、行为或结局的任何具体信息；\n"
+            "2. 不能重复玩家已经问过的内容；\n"
+            "3. 不能使用任何说明性语言，如“你忽略了...”或“实际上...”；\n"
+            "4. 提示仅能围绕“提问角度、方向、范围”进行结构性引导；\n"
+            "5. 必须只输出一句提示，例如：“也许你可以从他的真实目的入手。”\n\n"
+            f"现在请根据以下信息生成一句提示：\n\n真相：{true_answer}\n\n玩家提问或陈述：“{question}”\n\n"
+            "输出格式：\n提示：{一句话，不超过25字，不得剧透，不得重复玩家内容}"
+        )
+
+        try:
+            llm_resp: LLMResponse = await provider.text_chat(
+                prompt=prompt,
+                contexts=[],
+                func_tool=None,
+                image_urls=[],
+            )
+            text = llm_resp.completion_text.strip()
+            if text.startswith("提示："):
+                text = text[len("提示：") :]
+            return text
+        except Exception as e:
+            logger.error(f"生成提示失败: {e}")
+            return "（生成提示失败，请重试）"
+
     @filter.command("汤难度")
     async def set_difficulty(self, event: AstrMessageEvent, level: str = ""):
         """设置游戏难度"""
@@ -983,6 +1043,8 @@ class SoupaiPlugin(Star):
                 verification_attempts=0,
                 pre_verification_attempts=0,
                 accept_levels=diff_conf["accept_levels"],
+                hint_limit=diff_conf.get("hint_limit"),
+                hint_count=0,
             ):
                 print(f"[测试输出] /汤 指令：游戏启动成功，群ID: {group_id}")
                 extra = ""
@@ -1150,6 +1212,21 @@ class SoupaiPlugin(Star):
                         )
                         await self._handle_view_history_in_session(event, group_id)
                         controller.keep(timeout=self.game_timeout, reset_timeout=True)
+                        return
+                    if user_input.startswith("/提示"):
+                        import re
+
+                        match = re.match(r"^/提示\s*(.+)$", user_input)
+                        if match:
+                            hint_question = match.group(1).strip()
+                            await self.hint_command(event, hint_question)
+                            controller.keep(timeout=self.game_timeout, reset_timeout=True)
+                        else:
+                            await event.send(
+                                event.plain_result(
+                                    "请输入要获取提示的内容，例如：/提示 他为什么要这么做"
+                                )
+                            )
                         return
                     # 特殊处理 /验证 指令
                     if user_input.startswith("/验证"):
@@ -1756,6 +1833,7 @@ class SoupaiPlugin(Star):
                 and not user_input.startswith("/重置题库")
                 and not user_input.startswith("/题库详情")
                 and not user_input.startswith("/查看")
+                and not user_input.startswith("/提示")
             ):
                 print(f"[测试输出] 全局拦截器：拦截指令 '{user_input}'")
                 yield event.plain_result(
@@ -1885,6 +1963,40 @@ class SoupaiPlugin(Star):
         )
 
         yield event.plain_result(message)
+
+    @filter.command("提示")
+    async def hint_command(self, event: AstrMessageEvent, user_question: str):
+        """提供方向性提示"""
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("提示功能只能在群聊中使用")
+            return
+
+        game = self.game_state.get_game(group_id)
+        if not game:
+            yield event.plain_result("当前没有活跃的海龟汤游戏")
+            return
+
+        hint_limit = game.get("hint_limit")
+        hint_count = game.get("hint_count", 0)
+        if hint_limit == 0:
+            yield event.plain_result("当前难度不可使用提示")
+            return
+        if hint_limit is not None and hint_count >= hint_limit:
+            yield event.plain_result("提示次数已用完")
+            return
+
+        question = user_question.strip()
+        if not question:
+            yield event.plain_result("请在 /提示 后添加你的提问或陈述")
+            return
+
+        hint = await self.generate_hint(question, game["answer"])
+        game["hint_count"] = hint_count + 1
+        suffix = ""
+        if hint_limit is not None:
+            suffix = f"（{game['hint_count']}/{hint_limit}）"
+        yield event.plain_result(f"提示：{hint}{suffix}")
 
     # 🔍 验证指令（仅在非游戏会话时处理）
     @filter.command("验证")

@@ -6,7 +6,7 @@ import pickle
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Tuple, List
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api.provider import LLMResponse
 from astrbot.api import logger, AstrBotConfig
@@ -1229,8 +1229,10 @@ class SoupaiPlugin(Star):
                         await self._handle_view_history_in_session(event, group_id)
                         controller.keep(timeout=self.game_timeout, reset_timeout=True)
                         return
-                    if user_input.startswith("/提示","提示"):
-                        await self.hint_command(event)
+                    if user_input in ("/提示", "提示"):
+                        result = await self._build_hint_result(event, group_id)
+                        if result:
+                            await event.send(result)
                         controller.keep(timeout=self.game_timeout, reset_timeout=True)
                         return
                     # 特殊处理 /验证 指令
@@ -1630,6 +1632,35 @@ class SoupaiPlugin(Star):
             print(f"[测试输出] 会话查看历史异常: {e}")
             await event.send(event.plain_result(f"查看历史记录时发生错误：{e}"))
 
+    async def _build_hint_result(
+        self, event: AstrMessageEvent, group_id: str
+    ) -> Optional[MessageEventResult]:
+        """生成提示结果，供指令或会话控制调用"""
+        if not group_id:
+            return event.plain_result("提示功能只能在群聊中使用")
+
+        game = self.game_state.get_game(group_id)
+        if not game:
+            return event.plain_result("当前没有活跃的海龟汤游戏")
+
+        hint_limit = game.get("hint_limit")
+        hint_count = game.get("hint_count", 0)
+        if hint_limit == 0:
+            return event.plain_result("当前难度不可使用提示")
+        if hint_limit is not None and hint_count >= hint_limit:
+            return event.plain_result("提示次数已用完")
+
+        qa_history = game.get("qa_history", [])
+        if not qa_history:
+            return event.plain_result("请先进行提问后再请求提示")
+
+        hint = await self.generate_hint(qa_history, game["answer"])
+        game["hint_count"] = hint_count + 1
+        suffix = ""
+        if hint_limit is not None:
+            suffix = f"（{game['hint_count']}/{hint_limit}）"
+        return event.plain_result(f"提示：{hint}{suffix}")
+
     async def _handle_verification_in_session(
         self, event: AstrMessageEvent, user_guess: str, answer: str
     ):
@@ -1971,36 +2002,9 @@ class SoupaiPlugin(Star):
     @filter.command("提示")
     async def hint_command(self, event: AstrMessageEvent):
         """根据当前所有提问记录提供方向性提示"""
-        group_id = event.get_group_id()
-        if not group_id:
-            yield event.plain_result("提示功能只能在群聊中使用")
-            return
-
-        game = self.game_state.get_game(group_id)
-        if not game:
-            yield event.plain_result("当前没有活跃的海龟汤游戏")
-            return
-
-        hint_limit = game.get("hint_limit")
-        hint_count = game.get("hint_count", 0)
-        if hint_limit == 0:
-            yield event.plain_result("当前难度不可使用提示")
-            return
-        if hint_limit is not None and hint_count >= hint_limit:
-            yield event.plain_result("提示次数已用完")
-            return
-
-        qa_history = game.get("qa_history", [])
-        if not qa_history:
-            yield event.plain_result("请先进行提问后再请求提示")
-            return
-
-        hint = await self.generate_hint(qa_history, game["answer"])
-        game["hint_count"] = hint_count + 1
-        suffix = ""
-        if hint_limit is not None:
-            suffix = f"（{game['hint_count']}/{hint_limit}）"
-        yield event.plain_result(f"提示：{hint}{suffix}")
+        result = await self._build_hint_result(event, event.get_group_id())
+        if result:
+            yield result
 
     # 🔍 验证指令（仅在非游戏会话时处理）
     @filter.command("验证")

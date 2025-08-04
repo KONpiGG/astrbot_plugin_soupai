@@ -981,6 +981,7 @@ class SoupaiPlugin(Star):
                 question_limit=diff_conf["limit"],
                 question_count=0,
                 verification_attempts=0,
+                pre_verification_attempts=0,
                 accept_levels=diff_conf["accept_levels"],
             ):
                 print(f"[测试输出] /汤 指令：游戏启动成功，群ID: {group_id}")
@@ -1543,13 +1544,31 @@ class SoupaiPlugin(Star):
     ):
         """在会话控制中处理验证逻辑"""
         try:
+            group_id = event.get_group_id()
+            game = self.game_state.get_game(group_id) if group_id else None
+            difficulty = game.get("difficulty") if game else None
+            question_limit = game.get("question_limit") if game else None
+            question_count = game.get("question_count", 0) if game else 0
+
+            # 验证次数限制（简单难度无限制）
+            if game and difficulty != "简单" and question_limit is not None:
+                if question_count < question_limit:
+                    attempts = game.get("pre_verification_attempts", 0)
+                    if attempts >= 2:
+                        await event.send(event.plain_result("已经没有验证次数了"))
+                        return
+                    game["pre_verification_attempts"] = attempts + 1
+                else:
+                    attempts = game.get("verification_attempts", 0)
+                    if attempts >= 2:
+                        await event.send(event.plain_result("已经没有验证次数了"))
+                        return
+
             print(f"[测试输出] 会话验证：开始验证推理: '{user_guess}'")
 
             # 验证用户推理
             result = await self.verify_user_guess(user_guess, answer)
 
-            group_id = event.get_group_id()
-            game = self.game_state.get_game(group_id) if group_id else None
             accept_levels = (
                 game.get("accept_levels", ["完全还原", "核心推理正确"])
                 if game
@@ -1577,8 +1596,9 @@ class SoupaiPlugin(Star):
 
             if (
                 game
-                and game.get("question_limit") is not None
-                and game.get("question_count", 0) >= game.get("question_limit")
+                and difficulty != "简单"
+                and question_limit is not None
+                and question_count >= question_limit
             ):
                 game["verification_attempts"] = game.get("verification_attempts", 0) + 1
                 remaining = 2 - game["verification_attempts"]

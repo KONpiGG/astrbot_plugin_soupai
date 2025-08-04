@@ -786,7 +786,7 @@ class SoupaiPlugin(Star):
         """构建验证系统提示词"""
         return """你是一个推理游戏的裁判。玩家需要还原一个隐藏的完整故事，你的任务是根据玩家的陈述与标准答案对比，判断其相似程度。
 
-你的任务是对这两个内容进行比较，判断它们在“核心因果逻辑、关键行为动机、事件结果解释”方面是否一致。
+你的任务是对这两个内容进行比较，判断它们在"核心因果逻辑、关键行为动机、事件结果解释"方面是否一致。
 
 请根据相似程度将玩家推理划分为以下四个等级之一：
 
@@ -803,8 +803,9 @@ class SoupaiPlugin(Star):
 - 当等级为"完全还原"或"核心推理正确"时，表示玩家基本猜中了故事真相。
 - 评价应中立简洁，仅反映玩家推理的整体完成度、偏离程度或结构性问题。  
 - 严禁直接或间接泄露正确答案中的信息，包括行为动机、情节真相、因果反转等。  
-- 不得使用带有暗示性的语句，如“其实…”、“你忽略了…”、“正确是…”等。
+- 不得使用带有暗示性的语句，如"其实…"、"你忽略了…"、"正确是…"等。
 - 只输出等级和评价，不要添加其他内容。"""
+
 
     def _build_verification_user_prompt(self, user_guess: str, true_answer: str) -> str:
         """构建验证用户提示词"""
@@ -881,7 +882,7 @@ class SoupaiPlugin(Star):
             f'4. 只能回答："是"、"否"或"是也不是"\n'
             f'5. "是"：完全符合真相\n'
             f'6. "否"：完全不符合真相\n'
-            f'7. "是也不是"：部分内容符合，但有遗漏、偏差，或表达不明确导致不能直接判定为“是”或“否”。\n\n'
+            f'7. "是也不是"：部分内容符合，但有遗漏、偏差，或表达不明确导致不能直接判定为"是"或"否"。\n\n'
             f"请根据以上规则判断并回答。"
         )
 
@@ -906,8 +907,10 @@ class SoupaiPlugin(Star):
             return "（判断失败，请重试）"
 
     # ✅ 生成方向性提示
-    async def generate_hint(self, question: str, true_answer: str) -> str:
-        """根据玩家提问生成方向性提示"""
+    async def generate_hint(
+        self, qa_history: List[Dict[str, str]], true_answer: str
+    ) -> str:
+        """根据本局已记录的所有提问及回答生成方向性提示"""
         if self.judge_llm_provider_id:
             provider = self.context.get_provider_by_id(self.judge_llm_provider_id)
             if provider is None:
@@ -920,17 +923,20 @@ class SoupaiPlugin(Star):
             if provider is None:
                 return "（未配置 LLM，无法提供提示）"
 
+        history_text = "\n".join(
+            [f"问：{item['question']}\n答：{item['answer']}" for item in qa_history]
+        )
         prompt = (
             "你是一个推理游戏的提示助手，负责在玩家卡顿时引导其思考方向。\n\n"
-            "你将获得：\n- 故事的完整真相；\n- 玩家当前的提问或陈述内容。\n\n"
-            "你的任务是：根据玩家的说法是否靠近故事的核心逻辑，给予一句【非剧透】、【非重复】的方向性提示，帮助玩家调整提问思路。\n\n"
+            "你将获得：\n- 故事的完整真相；\n- 玩家在请求提示前已提出的所有问题及你给出的回答。\n\n"
+            "你的任务是：根据玩家的提问是否接近故事的核心逻辑，给予一句【非剧透】、【非重复】的方向性提示，帮助玩家调整提问思路。\n\n"
             "要求如下：\n"
             "1. 提示不能包含故事情节、动机、行为或结局的任何具体信息；\n"
-            "2. 不能重复玩家已经问过的内容；\n"
-            "3. 不能使用任何说明性语言，如“你忽略了...”或“实际上...”；\n"
-            "4. 提示仅能围绕“提问角度、方向、范围”进行结构性引导；\n"
-            "5. 必须只输出一句提示，例如：“也许你可以从他的真实目的入手。”\n\n"
-            f"现在请根据以下信息生成一句提示：\n\n真相：{true_answer}\n\n玩家提问或陈述：“{question}”\n\n"
+            "2. 提示需避免与玩家的提问或陈述内容相似；\n"
+            "3. 不能使用任何说明性语言，如\"你忽略了...\"或\"实际上...\"；\n"
+            "4. 提示仅能围绕\"提问角度、方向、范围\"进行结构性引导；\n"
+            "5. 必须只输出一句提示，例如：\"也许你可以从他的真实目的入手。\"\n\n"
+            f"现在请根据以下信息生成一句提示：\n\n真相：{true_answer}\n\n玩家此前的提问记录：\n{history_text}\n\n"
             "输出格式：\n提示：{一句话，不超过25字，不得剧透，不得重复玩家内容}"
         )
 
@@ -1041,7 +1047,6 @@ class SoupaiPlugin(Star):
                 question_limit=diff_conf["limit"],
                 question_count=0,
                 verification_attempts=0,
-                pre_verification_attempts=0,
                 accept_levels=diff_conf["accept_levels"],
                 hint_limit=diff_conf.get("hint_limit"),
                 hint_count=0,
@@ -1049,11 +1054,20 @@ class SoupaiPlugin(Star):
                 print(f"[测试输出] /汤 指令：游戏启动成功，群ID: {group_id}")
                 extra = ""
                 if diff_conf["limit"] is not None:
-                    extra = f"\n模式：{difficulty}（{diff_conf['limit']} 次提问）"
+                    extra = f"\n模式：{difficulty}（{diff_conf['limit']} 次提问"
                 else:
-                    extra = f"\n模式：{difficulty}（无限提问）"
+                    extra = f"\n模式：{difficulty}（无限提问"
+                
+                hint_limit = diff_conf.get("hint_limit")
+                if hint_limit == 0:
+                    extra += "，无提示）"
+                elif hint_limit is not None:
+                    extra += f"，{hint_limit} 次提示）"
+                else:
+                    extra += "）"
+                    
                 yield event.plain_result(
-                    f"🎮 海龟汤游戏开始！{extra}\n\n📖 题面：{puzzle}\n\n💡 请直接提问或陈述，我会回答：是、否、是也不是\n💡 输入 /揭晓 可以查看完整故事"
+                    f"🎮 海龟汤游戏开始！{extra}\n\n📖 题面：{puzzle}\n\n💡 请直接提问或陈述，我会回答：是、否、是也不是\n💡 输入 /揭晓 可以查看完整故事\n💡 输入 /提示 可以获取方向性提示"
                 )
 
                 # 启动会话控制
@@ -1205,6 +1219,8 @@ class SoupaiPlugin(Star):
                             controller.stop()
                         return
 
+
+
                     normalized_input = user_input.lstrip("/").strip()
                     if normalized_input == "查看":
                         print(
@@ -1213,20 +1229,9 @@ class SoupaiPlugin(Star):
                         await self._handle_view_history_in_session(event, group_id)
                         controller.keep(timeout=self.game_timeout, reset_timeout=True)
                         return
-                    if user_input.startswith("/提示"):
-                        import re
-
-                        match = re.match(r"^/提示\s*(.+)$", user_input)
-                        if match:
-                            hint_question = match.group(1).strip()
-                            await self.hint_command(event, hint_question)
-                            controller.keep(timeout=self.game_timeout, reset_timeout=True)
-                        else:
-                            await event.send(
-                                event.plain_result(
-                                    "请输入要获取提示的内容，例如：/提示 他为什么要这么做"
-                                )
-                            )
+                    if user_input.startswith("/提示","提示"):
+                        await self.hint_command(event)
+                        controller.keep(timeout=self.game_timeout, reset_timeout=True)
                         return
                     # 特殊处理 /验证 指令
                     if user_input.startswith("/验证"):
@@ -1533,9 +1538,18 @@ class SoupaiPlugin(Star):
             if self.game_state.is_game_active(group_id):
                 game = self.game_state.get_game(group_id)
                 print(f"[测试输出] 会话游戏状态：群 {group_id} 有活跃游戏")
+                difficulty = game.get("difficulty", "普通")
+                question_count = game.get("question_count", 0)
+                question_limit = game.get("question_limit")
+                hint_count = game.get("hint_count", 0)
+                hint_limit = game.get("hint_limit")
+                
+                question_info = f"{question_count}/{question_limit}" if question_limit else f"{question_count}/∞"
+                hint_info = f"{hint_count}/{hint_limit}" if hint_limit else "不可用"
+                
                 await event.send(
                     event.plain_result(
-                        f"🎮 当前有活跃的海龟汤游戏\n📖 题面：{game['puzzle']}"
+                        f"🎮 当前有活跃的海龟汤游戏\n📖 题面：{game['puzzle']}\n🎯 难度：{difficulty}\n❓ 提问：{question_info}\n💡 提示：{hint_info}"
                     )
                 )
             else:
@@ -1621,31 +1635,13 @@ class SoupaiPlugin(Star):
     ):
         """在会话控制中处理验证逻辑"""
         try:
-            group_id = event.get_group_id()
-            game = self.game_state.get_game(group_id) if group_id else None
-            difficulty = game.get("difficulty") if game else None
-            question_limit = game.get("question_limit") if game else None
-            question_count = game.get("question_count", 0) if game else 0
-
-            # 验证次数限制（简单难度无限制）
-            if game and difficulty != "简单" and question_limit is not None:
-                if question_count < question_limit:
-                    attempts = game.get("pre_verification_attempts", 0)
-                    if attempts >= 2:
-                        await event.send(event.plain_result("已经没有验证次数了"))
-                        return
-                    game["pre_verification_attempts"] = attempts + 1
-                else:
-                    attempts = game.get("verification_attempts", 0)
-                    if attempts >= 2:
-                        await event.send(event.plain_result("已经没有验证次数了"))
-                        return
-
             print(f"[测试输出] 会话验证：开始验证推理: '{user_guess}'")
 
             # 验证用户推理
             result = await self.verify_user_guess(user_guess, answer)
 
+            group_id = event.get_group_id()
+            game = self.game_state.get_game(group_id) if group_id else None
             accept_levels = (
                 game.get("accept_levels", ["完全还原", "核心推理正确"])
                 if game
@@ -1673,9 +1669,8 @@ class SoupaiPlugin(Star):
 
             if (
                 game
-                and difficulty != "简单"
-                and question_limit is not None
-                and question_count >= question_limit
+                and game.get("question_limit") is not None
+                and game.get("question_count", 0) >= game.get("question_limit")
             ):
                 game["verification_attempts"] = game.get("verification_attempts", 0) + 1
                 remaining = 2 - game["verification_attempts"]
@@ -1715,8 +1710,17 @@ class SoupaiPlugin(Star):
         if self.game_state.is_game_active(group_id):
             game = self.game_state.get_game(group_id)
             print(f"[测试输出] /汤状态 指令：群 {group_id} 有活跃游戏")
+            difficulty = game.get("difficulty", "普通")
+            question_count = game.get("question_count", 0)
+            question_limit = game.get("question_limit")
+            hint_count = game.get("hint_count", 0)
+            hint_limit = game.get("hint_limit")
+            
+            question_info = f"{question_count}/{question_limit}" if question_limit else f"{question_count}/∞"
+            hint_info = f"{hint_count}/{hint_limit}" if hint_limit else "不可用"
+            
             yield event.plain_result(
-                f"🎮 当前有活跃的海龟汤游戏\n📖 题面：{game['puzzle']}"
+                f"🎮 当前有活跃的海龟汤游戏\n📖 题面：{game['puzzle']}\n🎯 难度：{difficulty}\n❓ 提问：{question_info}\n💡 提示：{hint_info}"
             )
         else:
             print(f"[测试输出] /汤状态 指令：群 {group_id} 没有活跃游戏")
@@ -1965,8 +1969,8 @@ class SoupaiPlugin(Star):
         yield event.plain_result(message)
 
     @filter.command("提示")
-    async def hint_command(self, event: AstrMessageEvent, user_question: str):
-        """提供方向性提示"""
+    async def hint_command(self, event: AstrMessageEvent):
+        """根据当前所有提问记录提供方向性提示"""
         group_id = event.get_group_id()
         if not group_id:
             yield event.plain_result("提示功能只能在群聊中使用")
@@ -1986,12 +1990,12 @@ class SoupaiPlugin(Star):
             yield event.plain_result("提示次数已用完")
             return
 
-        question = user_question.strip()
-        if not question:
-            yield event.plain_result("请在 /提示 后添加你的提问或陈述")
+        qa_history = game.get("qa_history", [])
+        if not qa_history:
+            yield event.plain_result("请先进行提问后再请求提示")
             return
 
-        hint = await self.generate_hint(question, game["answer"])
+        hint = await self.generate_hint(qa_history, game["answer"])
         game["hint_count"] = hint_count + 1
         suffix = ""
         if hint_limit is not None:

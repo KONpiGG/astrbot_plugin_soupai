@@ -1258,7 +1258,7 @@ class SoupaiPlugin(Star):
     def _is_at_bot(self, event: AstrMessageEvent) -> bool:
         """检查消息是否@了bot"""
 
-        bot_id = str(self.context.get_qq())
+        bot_id = str(event.get_self_id())
         for comp in event.message_obj.message:
             if isinstance(comp, At) and str(comp.qq) == bot_id:
                 return True

@@ -1399,8 +1399,6 @@ class SoupaiPlugin(Star):
         """在会话控制中处理查看历史记录逻辑"""
         try:
 
-            # 先发送一个简单的测试消息
-            await event.send(event.plain_result("测试：正在查看历史记录..."))
 
             game = self.game_state.get_game(group_id)
             if not game:

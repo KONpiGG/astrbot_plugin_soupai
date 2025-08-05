@@ -2,20 +2,20 @@
   "generate_llm_provider": {
     "description": "生成谜题的 LLM 服务商",
     "type": "string",
-    "hint": "选择用于生成海龟汤谜题的 LLM 服务商。留空则使用系统默认的 LLM 服务商。",
+    "hint": "留空则使用系统默认的 LLM 服务商。建议使用智力大于等于DeepSeek0-V2 R1的模型。",
     "default": ""
   },
   "judge_llm_provider": {
-    "description": "判断问答的 LLM 服务商",
+    "description": "判断问答和生成提示的 LLM 服务商",
     "type": "string",
-    "hint": "选择用于判断用户问答的 LLM 服务商。留空则使用系统默认的 LLM 服务商。",
+    "hint": "留空则使用系统默认的 LLM 服务商。不建议使用reasoning模型",
     "default": ""
   },
   "game_timeout": {
     "description": "游戏超时时间（秒）",
     "type": "int",
     "hint": "游戏超时时间，超过此时间自动结束游戏并揭晓答案",
-    "default": 300
+    "default": 1800
   },
   "storage_max_size": {
     "description": "存储库最大容量",

@@ -861,13 +861,15 @@ class SoupaiPlugin(Star):
                 contexts=[],
                 func_tool=None,
                 image_urls=[],
-                system_prompt='你是一个海龟汤推理游戏的助手。你必须严格按照游戏规则回答，只能回答"是"、"否"或"是也不是"，不能添加任何其他内容。',
+                system_prompt='你是一个海龟汤推理游戏的助手。你必须严格按照游戏规则回答，只能回答"是"、"否"、“不重要”或"是也不是"，不能添加任何其他内容。',
             )
 
+            valid_responses = {"是", "否", "是也不是", "不重要"}
             reply = llm_resp.completion_text.strip()
-            if reply.startswith("是") or reply.startswith("否"):
+            if reply in valid_responses:
                 return reply
-            return "是也不是。"
+            return "你给ai干宕机了或者有什么其他原因，反正他没好好回复，我也不知道为什么（我努力修过代码了）"
+
         except Exception as e:
             logger.error(f"判断问题失败: {e}")
             return "（判断失败，请重试）"

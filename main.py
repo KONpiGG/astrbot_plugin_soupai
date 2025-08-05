@@ -731,7 +731,7 @@ class SoupaiPlugin(Star):
 
     # ✅ 验证用户推理
     async def verify_user_guess(
-        self, user_guess: str, true_answer: str
+            self, user_guess: str, true_answer: str
     ) -> VerificationResult:
         """
         验证用户推理
@@ -805,7 +805,6 @@ class SoupaiPlugin(Star):
 - 严禁直接或间接泄露正确答案中的信息，包括行为动机、情节真相、因果反转等。  
 - 不得使用带有暗示性的语句，如"其实…"、"你忽略了…"、"正确是…"等。
 - 只输出等级和评价，不要添加其他内容。"""
-
 
     def _build_verification_user_prompt(self, user_guess: str, true_answer: str) -> str:
         """构建验证用户提示词"""
@@ -908,7 +907,7 @@ class SoupaiPlugin(Star):
 
     # ✅ 生成方向性提示
     async def generate_hint(
-        self, qa_history: List[Dict[str, str]], true_answer: str
+            self, qa_history: List[Dict[str, str]], true_answer: str
     ) -> str:
         """根据本局已记录的所有提问及回答生成方向性提示"""
         if self.judge_llm_provider_id:
@@ -949,7 +948,7 @@ class SoupaiPlugin(Star):
             )
             text = llm_resp.completion_text.strip()
             if text.startswith("提示："):
-                text = text[len("提示：") :]
+                text = text[len("提示："):]
             return text
         except Exception as e:
             logger.error(f"生成提示失败: {e}")
@@ -1040,16 +1039,16 @@ class SoupaiPlugin(Star):
             )
 
             if self.game_state.start_game(
-                group_id,
-                puzzle,
-                answer,
-                difficulty=difficulty,
-                question_limit=diff_conf["limit"],
-                question_count=0,
-                verification_attempts=0,
-                accept_levels=diff_conf["accept_levels"],
-                hint_limit=diff_conf.get("hint_limit"),
-                hint_count=0,
+                    group_id,
+                    puzzle,
+                    answer,
+                    difficulty=difficulty,
+                    question_limit=diff_conf["limit"],
+                    question_count=0,
+                    verification_attempts=0,
+                    accept_levels=diff_conf["accept_levels"],
+                    hint_limit=diff_conf.get("hint_limit"),
+                    hint_count=0,
             ):
                 print(f"[测试输出] /汤 指令：游戏启动成功，群ID: {group_id}")
                 extra = ""
@@ -1057,7 +1056,7 @@ class SoupaiPlugin(Star):
                     extra = f"\n模式：{difficulty}（{diff_conf['limit']} 次提问"
                 else:
                     extra = f"\n模式：{difficulty}（无限提问"
-                
+
                 hint_limit = diff_conf.get("hint_limit")
                 if hint_limit == 0:
                     extra += "，无提示）"
@@ -1065,7 +1064,7 @@ class SoupaiPlugin(Star):
                     extra += f"，{hint_limit} 次提示）"
                 else:
                     extra += "）"
-                    
+
                 yield event.plain_result(
                     f"🎮 海龟汤游戏开始！{extra}\n\n📖 题面：{puzzle}\n\n💡 请直接提问或陈述，我会回答：是、否、是也不是\n💡 输入 /揭晓 可以查看完整故事\n💡 输入 /提示 可以获取方向性提示"
                 )
@@ -1139,14 +1138,14 @@ class SoupaiPlugin(Star):
 
     # 🎯 游戏会话控制
     async def _start_game_session(
-        self, event: AstrMessageEvent, group_id: str, answer: str
+            self, event: AstrMessageEvent, group_id: str, answer: str
     ):
         """启动游戏会话控制"""
         try:
 
             @session_waiter(timeout=self.game_timeout, record_history_chains=False)
             async def game_session_waiter(
-                controller: SessionController, event: AstrMessageEvent
+                    controller: SessionController, event: AstrMessageEvent
             ):
                 try:
                     print(f"[测试输出] 会话控制：进入会话控制函数，群ID: {group_id}")
@@ -1219,8 +1218,6 @@ class SoupaiPlugin(Star):
                             controller.stop()
                         return
 
-
-
                     normalized_input = user_input.lstrip("/").strip()
                     if normalized_input == "查看":
                         print(
@@ -1230,8 +1227,8 @@ class SoupaiPlugin(Star):
                         controller.keep(timeout=self.game_timeout, reset_timeout=True)
                         return
                     if user_input in ("/提示", "提示"):
-                        result = await self._build_hint_result(event, group_id)
-                        if result:
+
+                        async for result in self.hint_command(event):
                             await event.send(result)
                         controller.keep(timeout=self.game_timeout, reset_timeout=True)
                         return
@@ -1531,7 +1528,7 @@ class SoupaiPlugin(Star):
         return None
 
     async def _handle_game_status_in_session(
-        self, event: AstrMessageEvent, group_id: str
+            self, event: AstrMessageEvent, group_id: str
     ):
         """在会话控制中处理游戏状态查询逻辑"""
         try:
@@ -1545,10 +1542,10 @@ class SoupaiPlugin(Star):
                 question_limit = game.get("question_limit")
                 hint_count = game.get("hint_count", 0)
                 hint_limit = game.get("hint_limit")
-                
+
                 question_info = f"{question_count}/{question_limit}" if question_limit else f"{question_count}/∞"
                 hint_info = f"{hint_count}/{hint_limit}" if hint_limit else "不可用"
-                
+
                 await event.send(
                     event.plain_result(
                         f"🎮 当前有活跃的海龟汤游戏\n📖 题面：{game['puzzle']}\n🎯 难度：{difficulty}\n❓ 提问：{question_info}\n💡 提示：{hint_info}"
@@ -1568,7 +1565,7 @@ class SoupaiPlugin(Star):
             await event.send(event.plain_result(f"查询游戏状态时发生错误：{e}"))
 
     async def _handle_force_end_in_session(
-        self, event: AstrMessageEvent, group_id: str
+            self, event: AstrMessageEvent, group_id: str
     ):
         """在会话控制中处理强制结束游戏逻辑"""
         try:
@@ -1587,7 +1584,7 @@ class SoupaiPlugin(Star):
             await event.send(event.plain_result(f"强制结束游戏时发生错误：{e}"))
 
     async def _handle_view_history_in_session(
-        self, event: AstrMessageEvent, group_id: str
+            self, event: AstrMessageEvent, group_id: str
     ):
         """在会话控制中处理查看历史记录逻辑"""
         try:
@@ -1633,7 +1630,7 @@ class SoupaiPlugin(Star):
             await event.send(event.plain_result(f"查看历史记录时发生错误：{e}"))
 
     async def _build_hint_result(
-        self, event: AstrMessageEvent, group_id: str
+            self, event: AstrMessageEvent, group_id: str
     ) -> Optional[MessageEventResult]:
         """生成提示结果，供指令或会话控制调用"""
         if not group_id:
@@ -1662,7 +1659,7 @@ class SoupaiPlugin(Star):
         return event.plain_result(f"提示：{hint}{suffix}")
 
     async def _handle_verification_in_session(
-        self, event: AstrMessageEvent, user_guess: str, answer: str
+            self, event: AstrMessageEvent, user_guess: str, answer: str
     ):
         """在会话控制中处理验证逻辑"""
         try:
@@ -1699,9 +1696,9 @@ class SoupaiPlugin(Star):
                 return
 
             if (
-                game
-                and game.get("question_limit") is not None
-                and game.get("question_count", 0) >= game.get("question_limit")
+                    game
+                    and game.get("question_limit") is not None
+                    and game.get("question_count", 0) >= game.get("question_limit")
             ):
                 game["verification_attempts"] = game.get("verification_attempts", 0) + 1
                 remaining = 2 - game["verification_attempts"]
@@ -1746,10 +1743,10 @@ class SoupaiPlugin(Star):
             question_limit = game.get("question_limit")
             hint_count = game.get("hint_count", 0)
             hint_limit = game.get("hint_limit")
-            
+
             question_info = f"{question_count}/{question_limit}" if question_limit else f"{question_count}/∞"
             hint_info = f"{hint_count}/{hint_limit}" if hint_limit else "不可用"
-            
+
             yield event.plain_result(
                 f"🎮 当前有活跃的海龟汤游戏\n📖 题面：{game['puzzle']}\n🎯 难度：{difficulty}\n❓ 提问：{question_info}\n💡 提示：{hint_info}"
             )
@@ -1855,20 +1852,20 @@ class SoupaiPlugin(Star):
             user_input = event.message_str.strip()
             # 只拦截非本插件的指令，避免阻断自己的指令
             if (
-                user_input.startswith("/")
-                and not user_input.startswith("/备用结束")
-                and not user_input.startswith("/汤")
-                and not user_input.startswith("/揭晓")
-                and not user_input.startswith("/验证")
-                and not user_input.startswith("/汤状态")
-                and not user_input.startswith("/强制结束")
-                and not user_input.startswith("/备用开始")
-                and not user_input.startswith("/备用状态")
-                and not user_input.startswith("/汤配置")
-                and not user_input.startswith("/重置题库")
-                and not user_input.startswith("/题库详情")
-                and not user_input.startswith("/查看")
-                and not user_input.startswith("/提示")
+                    user_input.startswith("/")
+                    and not user_input.startswith("/备用结束")
+                    and not user_input.startswith("/汤")
+                    and not user_input.startswith("/揭晓")
+                    and not user_input.startswith("/验证")
+                    and not user_input.startswith("/汤状态")
+                    and not user_input.startswith("/强制结束")
+                    and not user_input.startswith("/备用开始")
+                    and not user_input.startswith("/备用状态")
+                    and not user_input.startswith("/汤配置")
+                    and not user_input.startswith("/重置题库")
+                    and not user_input.startswith("/题库详情")
+                    and not user_input.startswith("/查看")
+                    and not user_input.startswith("/提示")
             ):
                 print(f"[测试输出] 全局拦截器：拦截指令 '{user_input}'")
                 yield event.plain_result(

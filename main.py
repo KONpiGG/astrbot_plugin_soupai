@@ -2,12 +2,11 @@ import json
 import asyncio
 import os
 import threading
-import pickle
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Tuple, List
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api.provider import LLMResponse
 from astrbot.api import logger, AstrBotConfig
 from astrbot.core.utils.session_waiter import (
@@ -28,36 +27,27 @@ class ThreadSafeStoryStorage:
         self.used_indexes: set[int] = set()
         self.lock = threading.Lock()  # 线程锁
         self.usage_file = (
-            self.data_path / f"{storage_name}_usage.pkl" if self.data_path else None
-        )
-        self.usage_backup_file = (
             self.data_path / f"{storage_name}_usage.json" if self.data_path else None
         )
         self.load_usage_record()
 
     def load_usage_record(self):
         """从文件加载使用记录"""
-        if not self.usage_file and not self.usage_backup_file:
+        if not self.usage_file:
             self.used_indexes = set()
             return
 
         try:
-            if self.usage_file and self.usage_file.exists():
-                with open(self.usage_file, "rb") as f:
-                    self.used_indexes = pickle.load(f)
-                logger.info(
-                    f"从 {self.usage_file} 加载了 {len(self.used_indexes)} 个使用记录"
-                )
-            elif self.usage_backup_file and self.usage_backup_file.exists():
-                with open(self.usage_backup_file, "r", encoding="utf-8") as f:
+            if self.usage_file.exists():
+                with open(self.usage_file, "r", encoding="utf-8") as f:
                     self.used_indexes = set(json.load(f))
                 logger.info(
-                    f"从 {self.usage_backup_file} 加载了 {len(self.used_indexes)} 个使用记录"
+                    f"从 {self.usage_file} 加载了 {len(self.used_indexes)} 个使用记录"
                 )
             else:
                 self.used_indexes = set()
                 logger.info(
-                    f"使用记录文件不存在，创建新的记录: {self.usage_file or self.usage_backup_file}"
+                    f"使用记录文件不存在，创建新的记录: {self.usage_file}"
                 )
         except Exception as e:
             logger.error(f"加载使用记录失败: {e}")
@@ -70,11 +60,8 @@ class ThreadSafeStoryStorage:
 
         try:
             self.usage_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.usage_file, "wb") as f:
-                pickle.dump(self.used_indexes, f)
-            if self.usage_backup_file:
-                with open(self.usage_backup_file, "w", encoding="utf-8") as f:
-                    json.dump(list(self.used_indexes), f, ensure_ascii=False, indent=2)
+            with open(self.usage_file, "w", encoding="utf-8") as f:
+                json.dump(list(self.used_indexes), f, ensure_ascii=False, indent=2)
             logger.info(
                 f"保存了 {len(self.used_indexes)} 个使用记录到 {self.usage_file}"
             )
@@ -384,9 +371,8 @@ class SoupaiPlugin(Star):
         }
         self.group_difficulty: Dict[str, str] = {}
 
-        # 数据存储路径: .../data/plugin_data/soupai
-        plugin_dir = Path(__file__).resolve().parent
-        self.data_path = plugin_dir.parent.parent / "plugin_data" / "soupai"
+        # 数据存储路径: 使用框架提供的工具获取插件数据目录
+        self.data_path = StarTools.get_data_dir()
         self.data_path.mkdir(parents=True, exist_ok=True)
 
         # 存储库初始化延迟到 init 方法中
@@ -1272,9 +1258,9 @@ class SoupaiPlugin(Star):
     def _is_at_bot(self, event: AstrMessageEvent) -> bool:
         """检查消息是否@了bot"""
 
-        bot_id = "3999329688"
+        bot_id = str(self.context.get_qq())
         for comp in event.message_obj.message:
-            if isinstance(comp, At) and str(comp.qq) == str(bot_id):
+            if isinstance(comp, At) and str(comp.qq) == bot_id:
                 return True
         return False
 

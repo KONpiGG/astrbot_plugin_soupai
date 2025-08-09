@@ -316,10 +316,18 @@ class VerificationResult:
 
 # 自定义会话过滤器 - 以群为单位进行会话控制
 class GroupSessionFilter(SessionFilter):
+    """会话过滤器，确保每个群的会话独立"""
+
+    def __init__(self, group_id: str):
+        # 为每个会话保存其所属群 ID
+        self.group_id = group_id
+
     def filter(self, event: AstrMessageEvent) -> str:
-        return (
+        current_group_id = (
             event.get_group_id() if event.get_group_id() else event.unified_msg_origin
         )
+        # 仅当事件来自该群时才返回有效的会话 ID，否则返回空串避免误触发
+        return self.group_id if current_group_id == self.group_id else ""
 
 
 @register(
@@ -1240,7 +1248,8 @@ class SoupaiPlugin(Star):
                     controller.stop()
 
             try:
-                await game_session_waiter(event, session_filter=GroupSessionFilter())
+                # 使用群 ID 限制会话范围，避免多个群并发时互相触发
+                await game_session_waiter(event, session_filter=GroupSessionFilter(group_id))
             except TimeoutError:
                 game = self.game_state.get_game(group_id)
                 if game:

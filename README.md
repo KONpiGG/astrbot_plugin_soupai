@@ -79,7 +79,7 @@
 > - **困难**：1 次提示
 > - **666开挂了**：无提示
 
-提示系统会根据玩家此前的所有提问记录，生成非剧透的方向性引导，帮助玩家调整思考方向。提示内容不会包含故事情节、动机、行为或结局的具体信息，仅围绕提问角度、方向、范围进行结构性引导。提示次数用完后将无法继续使用。
+提示系统会根据玩家此前的所有提问记录和已给出的提示，生成不重复的方向性引导，帮助玩家调整思考方向。提示内容不会包含故事情节、动机、行为或结局的具体信息，仅围绕提问角度、方向、范围进行结构性引导，并以“关注【维度】：动词+对象/变量”的格式给出。提示次数用完后将无法继续使用。
 
 ## 🔧 技术特性
 
@@ -127,7 +127,7 @@
 - `@register` 装饰器注册插件
 - `@filter.command` 注册指令处理器
 - `session_waiter` 实现会话控制
-- `async def generate_hint()` 实现提示生成功能
+- `async def generate_hint(puzzle, true_answer, qa_history, hint_history)` 实现提示生成功能
 - `self.context.get_using_provider()` 调用默认 LLM 服务
 - `self.context.get_provider_by_id()` 调用指定的 LLM 服务商
 - `self.game_state.start_game()` 支持提示次数初始化

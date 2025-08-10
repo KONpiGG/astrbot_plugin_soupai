@@ -98,6 +98,7 @@ class GameState:
             "answer": answer,
             "is_active": True,
             "qa_history": [],
+            "hint_history": [],
         }
         game_data.update(extra)
         self.active_games[group_id] = game_data
@@ -897,9 +898,13 @@ class SoupaiPlugin(Star):
 
     # ✅ 生成方向性提示
     async def generate_hint(
-            self, qa_history: List[Dict[str, str]], true_answer: str
+            self,
+            puzzle: str,
+            true_answer: str,
+            qa_history: List[Dict[str, str]],
+            hint_history: List[str],
     ) -> str:
-        """根据本局已记录的所有提问及回答生成方向性提示"""
+        """根据本局已记录的问答与提示生成新的方向性提示"""
         if self.judge_llm_provider_id:
             provider = self.context.get_provider_by_id(self.judge_llm_provider_id)
             if provider is None:
@@ -915,18 +920,25 @@ class SoupaiPlugin(Star):
         history_text = "\n".join(
             [f"问：{item['question']}\n答：{item['answer']}" for item in qa_history]
         )
+        hint_text = "\n".join(hint_history) if hint_history else "（无）"
         prompt = (
-            "你是一个推理游戏的提示助手，负责在玩家卡顿时引导其思考方向。\n\n"
-            "你将获得：\n- 故事的完整真相；\n- 玩家在请求提示前已提出的所有问题及你给出的回答。\n\n"
-            "你的任务是：根据玩家的提问是否接近故事的核心逻辑，给予一句【非剧透】、【非重复】的方向性提示，帮助玩家调整提问思路。\n\n"
-            "要求如下：\n"
-            "1. 提示不能包含故事情节、动机、行为或结局的任何具体信息；\n"
-            "2. 提示需避免与玩家的提问或陈述内容相似；\n"
-            "3. 不能使用任何说明性语言，如\"你忽略了...\"或\"实际上...\"；\n"
-            "4. 提示仅能围绕\"提问角度、方向、范围\"进行结构性引导；\n"
-            "5. 必须只输出一句提示，例如：\"也许你可以从他的真实目的入手。\"\n\n"
-            f"现在请根据以下信息生成一句提示：\n\n真相：{true_answer}\n\n玩家此前的提问记录：\n{history_text}\n\n"
-            "输出格式：\n提示：{一句话，不超过25字，不得剧透，不得重复玩家内容}"
+            "你是一名\"海龟汤\"提示生成器。你知道完整真相（仅供内部推理，严禁外泄）。\n"
+            f"【题面】{puzzle}\n"
+            f"【完整真相（不可外泄）】{true_answer}\n"
+            f"【历史问答】{history_text}\n"
+            f"【历史提示】{hint_text}\n"
+            "请在心中完成以下步骤（不要输出过程，只输出最终一句话）：\n"
+            "归纳已知：从【历史问答】中提取玩家已确认(true)、已否定(false)、不重要(irrelevant)、部分正确(partial)的信息。\n\n"
+            "维度建模：按固定维度标注这些信息——对象/身份、关系、动机、时间、地点、物品/证据、行为步骤、因果先后、条件/限制、误解/反转、规则/机制。\n\n"
+            "选择方向：\n\n"
+            "优先选择未探索维度；若无则选择partial所对应维度并补齐缺口。\n\n"
+            "必须与【历史提示】在维度或语义上不重复。\n\n"
+            "结合【完整真相】做内部推理，形成一个动作化的下一步提问方向（用“动词+对象/变量”，能直接指导玩家怎么问）。\n\n"
+            "防泄漏与避开：\n\n"
+            "禁止出现或同义改写【完整真相】里的具体人/地/物、关键数字、唯一指向细节。\n\n"
+            "不得复述玩家已确认(true)的内容。\n\n"
+            "自检一次：若候选句子过于抽象（如仅“思考…关系/注意…影响”）、与历史提示近义、或触犯禁词/泄露细节，则改换维度或改用更具体的动作动词重写一次。随后给出最终版本。\n\n"
+            "输出要求（只输出一句话）：\n格式：关注【<维度>】：<动词+对象/变量>\n字数 ≤ 24 字；不得添加任何解释或前后缀。\n推荐动词：确定/排除/比较/对照/验证/追问/限定/分组/改换视角/检查顺序/查找来源。"
         )
 
         try:
@@ -1455,8 +1467,13 @@ class SoupaiPlugin(Star):
         if not qa_history:
             return event.plain_result("请先进行提问后再请求提示")
 
-        hint = await self.generate_hint(qa_history, game["answer"])
+        hint_history = game.get("hint_history", [])
+
+        hint = await self.generate_hint(
+            game["puzzle"], game["answer"], qa_history, hint_history
+        )
         game["hint_count"] = hint_count + 1
+        game["hint_history"] = hint_history + [hint]
         suffix = ""
         if hint_limit is not None:
             suffix = f"（{game['hint_count']}/{hint_limit}）"

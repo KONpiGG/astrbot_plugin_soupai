@@ -363,9 +363,9 @@ class SoupaiPlugin(Star):
                 "hint_limit": 10,
             },
             "普通": {
-                "limit": 30,
+                "limit": 35,
                 "accept_levels": ["完全还原"],
-                "hint_limit": 3,
+                "hint_limit": 5,
             },
             "困难": {
                 "limit": 15,

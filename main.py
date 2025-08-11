@@ -897,12 +897,38 @@ class SoupaiPlugin(Star):
             return "（判断失败，请重试）"
 
     # ✅ 生成方向性提示
+    def build_allow_list(self, puzzle: str, qa_history: List[Dict[str, str]]) -> List[str]:
+        """根据题面和历史问答构建允许在提示中出现的名词列表"""
+        import re
+
+        # 汇总文本：题面 + 所有问答
+        parts = [puzzle] + [
+            f"{item.get('question', '')}{item.get('answer', '')}" for item in qa_history
+        ]
+        text = "\n".join(parts)
+
+        # 提取连续的中文、字母或数字片段作为候选名词
+        tokens = re.findall(r"[A-Za-z0-9\u4e00-\u9fff]+", text)
+
+        allow: List[str] = []
+        for token in tokens:
+            if not token:
+                continue
+            # 同义合并：例如“男人A”“嫌疑人A”只保留末尾的大写字母
+            m = re.match(r".*([A-Z])$", token)
+            if m:
+                token = m.group(1)
+            if token not in allow:
+                allow.append(token)
+        return allow
+
     async def generate_hint(
             self,
             puzzle: str,
             true_answer: str,
             qa_history: List[Dict[str, str]],
             hint_history: List[str],
+            allow_list: List[str],
     ) -> str:
         """根据本局已记录的问答与提示生成新的方向性提示"""
         if self.judge_llm_provider_id:
@@ -921,24 +947,24 @@ class SoupaiPlugin(Star):
             [f"问：{item['question']}\n答：{item['answer']}" for item in qa_history]
         )
         hint_text = "\n".join(hint_history) if hint_history else "（无）"
+        allow_text = ", ".join(allow_list) if allow_list else "（无）"
         prompt = (
-            "你是一名\"海龟汤\"提示生成器。你知道完整真相（仅供内部推理，严禁外泄）。\n"
-            f"【题面】{puzzle}\n"
-            f"【完整真相（不可外泄）】{true_answer}\n"
-            f"【历史问答】{history_text}\n"
-            f"【历史提示】{hint_text}\n"
-            "请在心中完成以下步骤（不要输出过程，只输出最终一句话）：\n"
-            "归纳已知：从【历史问答】中提取玩家已确认(true)、已否定(false)、不重要(irrelevant)、部分正确(partial)的信息。\n\n"
-            "维度建模：按固定维度标注这些信息——对象/身份、关系、动机、时间、地点、物品/证据、行为步骤、因果先后、条件/限制、误解/反转、规则/机制。\n\n"
-            "选择方向：\n\n"
-            "优先选择未探索维度；若无则选择partial所对应维度并补齐缺口。\n\n"
-            "必须与【历史提示】在维度或语义上不重复。\n\n"
-            "结合【完整真相】做内部推理，形成一个动作化的下一步提问方向（用“动词+对象/变量”，能直接指导玩家怎么问）。\n\n"
-            "防泄漏与避开：\n\n"
-            "禁止出现或同义改写【完整真相】里的具体人/地/物、关键数字、唯一指向细节。\n\n"
-            "不得复述玩家已确认(true)的内容。\n\n"
-            "自检一次：若候选句子过于抽象（如仅“思考…关系/注意…影响”）、与历史提示近义、或触犯禁词/泄露细节，则改换维度或改用更具体的动作动词重写一次。随后给出最终版本。\n\n"
-            "输出要求（只输出一句话）：\n格式：关注【<维度>】：<动词+对象/变量>\n字数 ≤ 24 字；不得添加任何解释或前后缀。\n推荐动词：确定/排除/比较/对照/验证/追问/限定/分组/改换视角/检查顺序/查找来源。"
+            "你是\"海龟汤\"提示生成器。你知道完整真相（仅供内部推理，严禁外泄）。\n"
+            "材料：\n\n"
+            f"* 题面：{puzzle}\n"
+            f"* 完整真相（不可外泄）：{true_answer}\n"
+            f"* 历史问答：{history_text}\n"
+            f"* 历史提示：{hint_text}\n"
+            f"* 允许名词 allow_list：{allow_text}（只能使用其中名词，不得创造新名词）\n\n"
+            "在心中完成：\n\n"
+            "1. 从历史问答归纳：已确认/已否定/不重要/部分正确的信息；\n"
+            "2. 用以下维度整理：对象/身份、关系、动机、时间、地点、证据、步骤、先后、条件、规则、误解；\n"
+            "3. 选择一个“未探索”或“partial 尚缺”的维度，且与历史提示不重复；\n"
+            "4. 只使用 allow_list 中的名词与通用词，生成一句**动作化**的下一步提问方向；\n"
+            "5. 禁止泄露真相细节，不得同义改写泄露；不得复述已确认内容。\n\n"
+            "输出要求（只输出一句）：\n\n"
+            "* 格式：关注【<维度>】：<动词 + allow_list名词/通用词>\n"
+            "* 字数 ≤ 22（或 ≤ 24），不得添加解释。"
         )
 
         try:
@@ -1468,9 +1494,10 @@ class SoupaiPlugin(Star):
             return event.plain_result("请先进行提问后再请求提示")
 
         hint_history = game.get("hint_history", [])
+        allow_list = self.build_allow_list(game["puzzle"], qa_history)
 
         hint = await self.generate_hint(
-            game["puzzle"], game["answer"], qa_history, hint_history
+            game["puzzle"], game["answer"], qa_history, hint_history, allow_list
         )
         game["hint_count"] = hint_count + 1
         game["hint_history"] = hint_history + [hint]

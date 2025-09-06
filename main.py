@@ -193,7 +193,7 @@ class NetworkSoupaiStorage(ThreadSafeStoryStorage):
 class StoryStorage(ThreadSafeStoryStorage):
     def __init__(self, storage_file: str, max_size: int = 50, data_path=None):
         # 初始化基类
-        super().__init__("local_storage", data_path)
+        super().__init__("storage_soupai", data_path)
         self.storage_file = storage_file
         self.max_size = max_size
         self.stories: List[Dict] = []
@@ -507,14 +507,13 @@ class SoupaiPlugin(Star):
         """
 
         if self.local_story_storage is None:
-            storage_file = self.data_path / "soupai_stories.json"
+            storage_file = self.data_path / "storage_soupai.json"
             self.local_story_storage = StoryStorage(
                 storage_file, self.storage_max_size, self.data_path
             )
 
         if self.online_story_storage is None:
-            plugin_dir = Path(__file__).resolve().parent
-            network_file = plugin_dir / "network_soupai.json"
+            network_file = self.data_path / "network_soupai.json"
             self.online_story_storage = NetworkSoupaiStorage(
                 str(network_file), self.data_path
             )

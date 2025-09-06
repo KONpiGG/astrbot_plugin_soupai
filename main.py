@@ -1111,7 +1111,20 @@ class SoupaiPlugin(Star):
     # 🎮 开始游戏指令
     @filter.command("汤")
     async def start_soupai_game(self, event: AstrMessageEvent):
-        """开始海龟汤游戏"""
+        """开始海龟汤游戏
+        
+        使用格式: /汤 [题库类型] [题号]
+        
+        参数说明:
+        - 题库类型 (可选): network(网络题库), storage(本地存储库), custom(自定义题库)
+        - 题号 (可选): 指定题库中的题目索引，从0开始
+        
+        示例:
+        /汤                    # 使用配置的策略随机获取谜题
+        /汤 network           # 从网络题库随机获取谜题
+        /汤 storage 5         # 从本地存储库获取第5号谜题
+        /汤 custom 2          # 从自定义题库获取第2号谜题
+        """
         group_id = event.get_group_id()
         logger.info(f"收到开始游戏指令，群ID: {group_id}")
 
@@ -1143,40 +1156,64 @@ class SoupaiPlugin(Star):
             args = message_content.split()[1:]  # 去掉命令本身
             
             story = None
+            source_type = None
+            puzzle_index = None
             
-            if len(args) == 2 and args[0].lower() == "network":
-                # 格式: /汤 network 15 - 网络题库的15号题
-                try:
-                    puzzle_index = int(args[1])
-                    story = await self.get_story_by_index("network", puzzle_index)
-                    if not story:
-                        yield event.plain_result(f"网络题库中没有第 {puzzle_index} 号题目")
-                        self.generating_games.discard(group_id)
-                        return
-                except ValueError:
-                    yield event.plain_result("题号必须是数字")
-                    self.generating_games.discard(group_id)
-                    return
+            # 解析参数格式: /汤 <network|storage|custom> <题号>
+            # 两个参数都是可选的
+            if len(args) >= 1:
+                first_arg = args[0].lower()
+                
+                # 检查第一个参数是否是题库类型
+                if first_arg in ["network", "storage", "custom"]:
+                    source_type = first_arg
                     
-            elif len(args) == 1 and args[0].isdigit():
-                # 格式: /汤 16 - 当前默认可用题库顺序的16号题
-                try:
-                    puzzle_index = int(args[0])
-                    story = await self.get_story_by_index("current", puzzle_index)
-                    if not story:
-                        yield event.plain_result(f"当前题库中没有第 {puzzle_index} 号题目")
-                        self.generating_games.discard(group_id)
-                        return
-                except ValueError:
-                    yield event.plain_result("题号必须是数字")
-                    self.generating_games.discard(group_id)
-                    return
-                    
+                    # 检查是否有第二个参数（题号）
+                    if len(args) >= 2:
+                        try:
+                            puzzle_index = int(args[1])
+                        except ValueError:
+                            yield event.plain_result("题号必须是数字")
+                            self.generating_games.discard(group_id)
+                            return
+                else:
+                    # 第一个参数不是题库类型，可能是题号
+                    try:
+                        puzzle_index = int(first_arg)
+                        # 使用配置的策略作为默认题库类型
+                        strategy = self.puzzle_source_strategy
+                        if strategy == "network_first":
+                            source_type = "network"
+                        elif strategy == "storage_first":
+                            source_type = "storage"
+                        elif strategy == "custom_first":
+                            source_type = "custom"
+                        else:  # random
+                            source_type = "current"
+                    except ValueError:
+                        # 第一个参数既不是题库类型也不是题号，使用默认策略随机获取
+                        source_type = "current"
             else:
-                # 格式: /汤 - 当前默认可用题库的随机未用题（原始逻辑）
-                # 根据策略获取谜题
-                strategy = self.puzzle_source_strategy
-                story = await self.get_story_by_strategy(strategy)
+                # 没有参数，使用配置的策略随机获取
+                source_type = "current"
+            
+            # 根据解析的参数获取故事
+            if puzzle_index is not None:
+                # 指定了题号，从特定题库获取
+                story = await self.get_story_by_index(source_type, puzzle_index)
+                if not story:
+                    yield event.plain_result(f"{source_type}题库中没有第 {puzzle_index} 号题目")
+                    self.generating_games.discard(group_id)
+                    return
+            else:
+                # 没有指定题号，根据策略随机获取
+                if source_type == "current":
+                    # 使用配置的策略获取随机故事
+                    strategy = self.puzzle_source_strategy
+                    story = await self.get_story_by_strategy(strategy)
+                else:
+                    # 从指定题库获取随机故事
+                    story = await self.get_story_by_index(source_type, None)
 
             if not story:
                 yield event.plain_result("获取谜题失败，请重试")
@@ -1496,7 +1533,7 @@ class SoupaiPlugin(Star):
             # 4. LLM现场生成
             return await self.generate_story_with_llm()
 
-        elif strategy == "ai_first":
+        elif strategy == "storage_first":
             # 策略2：优先本地存储库 -> 网络题库 -> 自定义题库 -> LLM现场生成
 
             # 1. 检查本地存储库
@@ -1511,6 +1548,27 @@ class SoupaiPlugin(Star):
 
             # 3. 检查自定义题库
             story = self.custom_story_storage.get_story()
+            if story:
+                return story
+
+            # 4. LLM现场生成
+            return await self.generate_story_with_llm()
+
+        elif strategy == "custom_first":
+            # 策略3：优先自定义题库 -> 本地存储库 -> 网络题库 -> LLM现场生成
+
+            # 1. 检查自定义题库
+            story = self.custom_story_storage.get_story()
+            if story:
+                return story
+
+            # 2. 检查本地存储库
+            story = self.local_story_storage.get_story()
+            if story:
+                return story
+
+            # 3. 检查网络题库
+            story = self.online_story_storage.get_story()
             if story:
                 return story
 
@@ -1634,10 +1692,20 @@ class SoupaiPlugin(Star):
                     logger.info(f"从本地存储库获取指定故事，索引: {local_index}")
                     return story["puzzle"], story["answer"]
                 
+                # 然后检查自定义题库
+                custom_index = local_index - len(self.local_story_storage.stories)
+                if custom_index >= 0 and custom_index < len(self.custom_story_storage.stories):
+                    story = self.custom_story_storage.stories[custom_index]
+                    with self.custom_story_storage.lock:
+                        self.custom_story_storage.used_indexes.add(custom_index)
+                        self.custom_story_storage.save_usage_record()
+                    logger.info(f"从自定义题库获取指定故事，索引: {custom_index}")
+                    return story["puzzle"], story["answer"]
+                
                 # 超出范围，返回None
                 return None
                 
-            elif strategy == "ai_first":
+            elif strategy == "storage_first":
                 # 优先检查本地存储库
                 if index < len(self.local_story_storage.stories):
                     story = self.local_story_storage.stories[index]
@@ -1657,12 +1725,55 @@ class SoupaiPlugin(Star):
                     logger.info(f"从网络题库获取指定故事，索引: {network_index}")
                     return story["puzzle"], story["answer"]
                 
+                # 然后检查自定义题库
+                custom_index = network_index - len(self.online_story_storage.stories)
+                if custom_index >= 0 and custom_index < len(self.custom_story_storage.stories):
+                    story = self.custom_story_storage.stories[custom_index]
+                    with self.custom_story_storage.lock:
+                        self.custom_story_storage.used_indexes.add(custom_index)
+                        self.custom_story_storage.save_usage_record()
+                    logger.info(f"从自定义题库获取指定故事，索引: {custom_index}")
+                    return story["puzzle"], story["answer"]
+                
+                # 超出范围，返回None
+                return None
+                
+            elif strategy == "custom_first":
+                # 优先检查自定义题库
+                if index < len(self.custom_story_storage.stories):
+                    story = self.custom_story_storage.stories[index]
+                    with self.custom_story_storage.lock:
+                        self.custom_story_storage.used_indexes.add(index)
+                        self.custom_story_storage.save_usage_record()
+                    logger.info(f"从自定义题库获取指定故事，索引: {index}")
+                    return story["puzzle"], story["answer"]
+                
+                # 然后检查本地存储库
+                local_index = index - len(self.custom_story_storage.stories)
+                if local_index >= 0 and local_index < len(self.local_story_storage.stories):
+                    story = self.local_story_storage.stories[local_index]
+                    with self.local_story_storage.lock:
+                        self.local_story_storage.used_indexes.add(local_index)
+                        self.local_story_storage.save_usage_record()
+                    logger.info(f"从本地存储库获取指定故事，索引: {local_index}")
+                    return story["puzzle"], story["answer"]
+                
+                # 然后检查网络题库
+                network_index = local_index - len(self.local_story_storage.stories)
+                if network_index >= 0 and network_index < len(self.online_story_storage.stories):
+                    story = self.online_story_storage.stories[network_index]
+                    with self.online_story_storage.lock:
+                        self.online_story_storage.used_indexes.add(network_index)
+                        self.online_story_storage.save_usage_record()
+                    logger.info(f"从网络题库获取指定故事，索引: {network_index}")
+                    return story["puzzle"], story["answer"]
+                
                 # 超出范围，返回None
                 return None
                 
             elif strategy == "random":
                 # 对于随机策略，我们无法准确知道索引对应哪个题库
-                # 这里我们按顺序检查：先网络题库，再本地存储库
+                # 这里我们按顺序检查：先网络题库，再本地存储库，最后自定义题库
                 if index < len(self.online_story_storage.stories):
                     story = self.online_story_storage.stories[index]
                     with self.online_story_storage.lock:
@@ -1678,6 +1789,15 @@ class SoupaiPlugin(Star):
                         self.local_story_storage.used_indexes.add(local_index)
                         self.local_story_storage.save_usage_record()
                     logger.info(f"从本地存储库获取指定故事，索引: {local_index}")
+                    return story["puzzle"], story["answer"]
+                
+                custom_index = local_index - len(self.local_story_storage.stories)
+                if custom_index >= 0 and custom_index < len(self.custom_story_storage.stories):
+                    story = self.custom_story_storage.stories[custom_index]
+                    with self.custom_story_storage.lock:
+                        self.custom_story_storage.used_indexes.add(custom_index)
+                        self.custom_story_storage.save_usage_record()
+                    logger.info(f"从自定义题库获取指定故事，索引: {custom_index}")
                     return story["puzzle"], story["answer"]
                 
                 # 超出范围，返回None
@@ -2127,8 +2247,9 @@ class SoupaiPlugin(Star):
         # 获取策略的中文描述
         strategy_names = {
             "network_first": "优先网络题库→本地存储库→LLM生成",
+            "storage_first": "优先本地存储库→网络题库→LLM生成",
+            "custom_first": "优先自定义题库→本地存储库→LLM生成",
             "random": "随机选择网络题库或本地存储库",
-            "ai_first": "优先本地存储库→网络题库→LLM生成",
         }
         strategy_name = strategy_names.get(
             self.puzzle_source_strategy, self.puzzle_source_strategy

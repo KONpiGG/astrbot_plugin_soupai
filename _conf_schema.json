@@ -38,12 +38,13 @@
   "puzzle_source_strategy": {
     "description": "谜题来源策略",
     "type": "string",
-    "hint": "选择从网络题库还是 AI 生成获取谜题",
+    "hint": "选择从哪个题库优先获取谜题",
     "default": "network_first",
     "options": [
       "network_first",
-      "random",
-      "ai_first"
+      "storage_first", 
+      "custom_first",
+      "random"
     ]
   }
 } 

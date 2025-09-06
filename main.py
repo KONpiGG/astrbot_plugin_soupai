@@ -513,7 +513,8 @@ class SoupaiPlugin(Star):
             )
 
         if self.online_story_storage is None:
-            network_file = self.data_path / "network_soupai.json"
+            plugin_dir = Path(__file__).resolve().parent
+            network_file = plugin_dir / "network_soupai.json"
             self.online_story_storage = NetworkSoupaiStorage(
                 str(network_file), self.data_path
             )

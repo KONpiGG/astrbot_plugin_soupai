@@ -190,7 +190,7 @@ class NetworkSoupaiStorage(ThreadSafeStoryStorage):
 
 
 # 存储库管理
-class StoryStorage(ThreadSafeStoryStorage):
+class LocalSoupaiStorage(ThreadSafeStoryStorage):
     def __init__(self, storage_file: str, max_size: int = 50, data_path=None):
         # 初始化基类
         super().__init__("storage_soupai", data_path)
@@ -299,7 +299,7 @@ class StoryStorage(ThreadSafeStoryStorage):
 
 
 # 自定义海龟汤存储
-class CustomStoryStorage(ThreadSafeStoryStorage):
+class CustomSoupaiStorage(ThreadSafeStoryStorage):
     def __init__(self, storage_file: str, data_path=None):
         # 初始化基类
         super().__init__("custom_soupai", data_path)
@@ -436,7 +436,7 @@ class GroupSessionFilter(SessionFilter):
     "astrbot_plugin_soupai",
     "KONpiGG",
     "AI 海龟汤推理游戏插件，支持自动生成谜题、智能判断、验证系统、智能提示、存储库管理等功能。网络题库包含近300道海龟汤，还在持续更新中。",
-    "1.0.2",
+    "1.0.3",
     "https://github.com/KONpiGG/astrbot_plugin_soupai",
 )
 class SoupaiPlugin(Star):
@@ -455,6 +455,10 @@ class SoupaiPlugin(Star):
         self.puzzle_source_strategy = self.config.get(
             "puzzle_source_strategy", "network_first"
         )
+        # TODO: 别名兼容处理，建议若干版本后删除
+        if self.puzzle_source_strategy == "ai_first":
+            self.puzzle_source_strategy = "local_first"
+
 
         # 难度设置
         self.difficulty_settings = {
@@ -508,7 +512,7 @@ class SoupaiPlugin(Star):
 
         if self.local_story_storage is None:
             storage_file = self.data_path / "storage_soupai.json"
-            self.local_story_storage = StoryStorage(
+            self.local_story_storage = LocalSoupaiStorage(
                 storage_file, self.storage_max_size, self.data_path
             )
 
@@ -521,7 +525,7 @@ class SoupaiPlugin(Star):
 
         if self.custom_story_storage is None:
             custom_file = self.data_path / "custom_soupai.json"
-            self.custom_story_storage = CustomStoryStorage(
+            self.custom_story_storage = CustomSoupaiStorage(
                 custom_file, self.data_path
             )
 
@@ -1165,7 +1169,7 @@ class SoupaiPlugin(Star):
                 first_arg = args[0].lower()
                 
                 # 检查第一个参数是否是题库类型
-                if first_arg in ["network", "storage", "custom"]:
+                if first_arg in ["network", "local", "custom"]:
                     source_type = first_arg
                     
                     # 检查是否有第二个参数（题号）
@@ -1184,8 +1188,8 @@ class SoupaiPlugin(Star):
                         strategy = self.puzzle_source_strategy
                         if strategy == "network_first":
                             source_type = "network"
-                        elif strategy == "storage_first":
-                            source_type = "storage"
+                        elif strategy == "local_first":
+                            source_type = "local"
                         elif strategy == "custom_first":
                             source_type = "custom"
                         else:  # random
@@ -1213,7 +1217,17 @@ class SoupaiPlugin(Star):
                     story = await self.get_story_by_strategy(strategy)
                 else:
                     # 从指定题库获取随机故事
-                    story = await self.get_story_by_index(source_type, None)
+                    if source_type == "network":
+                        story = await self.online_story_storage.get_story()
+                    elif source_type == "local":
+                        story = await self.local_story_storage.get_story()
+                    elif source_type == "custom":
+                        story = await self.custom_story_storage.get_story()
+                    else:
+                        yield event.plain_result("题库类型参数错误，请使用 network/local/custom")
+                        self.generating_games.discard(group_id)
+                        return
+
 
             if not story:
                 yield event.plain_result("获取谜题失败，请重试")
@@ -1533,7 +1547,7 @@ class SoupaiPlugin(Star):
             # 4. LLM现场生成
             return await self.generate_story_with_llm()
 
-        elif strategy == "storage_first":
+        elif strategy == "local_first":
             # 策略2：优先本地存储库 -> 网络题库 -> 自定义题库 -> LLM现场生成
 
             # 1. 检查本地存储库
@@ -1579,7 +1593,7 @@ class SoupaiPlugin(Star):
             # 策略3：随机选择网络题库、本地存储库或自定义题库，失败时使用LLM现场生成
 
             # 随机决定这次从哪个题库获取
-            choice = random.choice(["network", "storage", "custom"])
+            choice = random.choice(["network", "local", "custom"])
             if choice == "network":
                 # 参考策略1的网络题库逻辑
                 story = self.online_story_storage.get_story()
@@ -1595,7 +1609,7 @@ class SoupaiPlugin(Star):
                     return story
 
                 return await self.generate_story_with_llm()
-            elif choice == "storage":
+            elif choice == "local":
                 # 参考策略2的本地存储库逻辑
                 story = self.local_story_storage.get_story()
                 if story:
@@ -1705,7 +1719,7 @@ class SoupaiPlugin(Star):
                 # 超出范围，返回None
                 return None
                 
-            elif strategy == "storage_first":
+            elif strategy == "local_first":
                 # 优先检查本地存储库
                 if index < len(self.local_story_storage.stories):
                     story = self.local_story_storage.stories[index]
@@ -2247,9 +2261,9 @@ class SoupaiPlugin(Star):
         # 获取策略的中文描述
         strategy_names = {
             "network_first": "优先网络题库→本地存储库→LLM生成",
-            "storage_first": "优先本地存储库→网络题库→LLM生成",
+            "local_first": "优先本地存储库→网络题库→LLM生成",
             "custom_first": "优先自定义题库→本地存储库→LLM生成",
-            "random": "随机选择网络题库或本地存储库",
+            "random": "随机从网络、本地或自定义题库中选择",
         }
         strategy_name = strategy_names.get(
             self.puzzle_source_strategy, self.puzzle_source_strategy

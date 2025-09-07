@@ -42,7 +42,7 @@
     "default": "network_first",
     "options": [
       "network_first",
-      "storage_first", 
+      "local_first",
       "custom_first",
       "random"
     ]
